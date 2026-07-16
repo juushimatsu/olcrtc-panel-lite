@@ -37,6 +37,13 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/olcrtc-panel-lite/master/inst
 
 Installer выводит URL, случайные credentials, CA fingerprint и server fingerprint один раз. Первый olcRTC-инстанс автоматически не создаётся.
 
+Установщик предпочитает HTTPS-порт `8443`. Если он занят, автоматически выбирается свободный TCP-порт из диапазона `10000–65535`. Порт можно задать явно:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/juushimatsu/olcrtc-panel-lite/master/install.sh \
+  | sudo OLCRTC_PUBLIC_PORT=9443 bash
+```
+
 Полезные режимы:
 
 ```bash
@@ -48,7 +55,7 @@ sudo bash install.sh --regenerate-cert
 sudo bash install.sh --configure-firewall
 ```
 
-По умолчанию firewall не изменяется. Панель слушает `0.0.0.0:8443` только по HTTPS.
+По умолчанию firewall не изменяется. Панель слушает выбранный установщиком порт на `0.0.0.0` только по HTTPS.
 
 ## Удаление
 

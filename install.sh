@@ -30,6 +30,50 @@ installation_complete() {
         [ -f /var/lib/olcrtc-panel/panel.db ]
 }
 
+valid_port() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+tcp_port_in_use() {
+    local port=$1
+    ss -H -ltn | awk -v wanted="$port" '
+        {
+            address = $4
+            sub(/^.*:/, "", address)
+            if (address == wanted) {
+                found = 1
+                exit
+            }
+        }
+        END { exit found ? 0 : 1 }
+    '
+}
+
+choose_panel_port() {
+    local preferred=$1
+    local span=55536
+    local seed start offset candidate
+
+    if ! tcp_port_in_use "$preferred"; then
+        printf '%s\n' "$preferred"
+        return 0
+    fi
+
+    seed=$(((RANDOM << 15) | RANDOM))
+    start=$((10000 + seed % span))
+    for ((offset = 0; offset < span; offset++)); do
+        candidate=$((10000 + (start - 10000 + offset) % span))
+        if ! tcp_port_in_use "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --install) MODE=install ;;
@@ -104,7 +148,7 @@ case "$ARCH" in amd64|arm64) ;; *) echo "Unsupported architecture: $ARCH" >&2; e
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl jq
+apt-get install -y --no-install-recommends ca-certificates curl iproute2 jq
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -151,6 +195,18 @@ if [ "$MODE" = update ] && [ -x /usr/local/bin/olcrtc-panel ] && [ -x /usr/lib/o
     exit
 fi
 
+CONFIGURED_PORT=""
+if [ -f "$CONFIG" ]; then
+    CONFIGURED_PORT=$(awk -F: '/^[[:space:]]*public_port:/ {gsub(/[[:space:]\"]/, "", $2); print $2; exit}' "$CONFIG")
+fi
+PREFERRED_PORT=${OLCRTC_PUBLIC_PORT:-${CONFIGURED_PORT:-8443}}
+valid_port "$PREFERRED_PORT" || { echo "Invalid panel port: $PREFERRED_PORT" >&2; exit 2; }
+ss -H -ltn >/dev/null || { echo "Could not inspect listening TCP ports" >&2; exit 1; }
+PANEL_PORT=$(choose_panel_port "$PREFERRED_PORT") || { echo "Could not find a free TCP port" >&2; exit 1; }
+if [ "$PANEL_PORT" != "$PREFERRED_PORT" ]; then
+    echo "TCP port $PREFERRED_PORT is already in use; selected free port $PANEL_PORT."
+fi
+
 id olcrtc >/dev/null 2>&1 || useradd --system --home-dir /var/lib/olcrtc --shell /usr/sbin/nologin olcrtc
 id olcrtc-wb >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/olcrtc-wb --shell /usr/sbin/nologin olcrtc-wb
 install -d -m 0700 -o root -g root /etc/olcrtc-panel /var/lib/olcrtc-panel "$RELEASES"
@@ -180,9 +236,9 @@ fi
 
 if [ ! -f "$CONFIG" ]; then
     cat > "$CONFIG" <<EOF
-listen: "0.0.0.0:8443"
+listen: "0.0.0.0:$PANEL_PORT"
 public_ip: "$PUBLIC_IP"
-public_port: 8443
+public_port: $PANEL_PORT
 database_path: "/var/lib/olcrtc-panel/panel.db"
 master_key_path: "/etc/olcrtc-panel/master.key"
 instances_dir: "/etc/olcrtc-panel/instances"
@@ -200,6 +256,11 @@ upstream_sha: "$(jq -r '.upstream_sha // ""' "$WORK/manifest.json")"
 panel_version: "$(jq -r '.panel_version // "unknown"' "$WORK/manifest.json")"
 EOF
     chmod 0600 "$CONFIG"
+elif [ "$CONFIGURED_PORT" != "$PANEL_PORT" ]; then
+    sed -i -E \
+        -e "s|^[[:space:]]*listen:.*|listen: \"0.0.0.0:$PANEL_PORT\"|" \
+        -e "s|^[[:space:]]*public_port:.*|public_port: $PANEL_PORT|" \
+        "$CONFIG"
 fi
 
 /usr/local/bin/olcrtc-panel assets install --root /
@@ -213,14 +274,14 @@ systemctl daemon-reload
 systemctl enable --now olcrtc-panel.service
 
 if $CONFIGURE_FIREWALL; then
-    if command -v ufw >/dev/null 2>&1; then ufw allow 8443/tcp; elif command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --permanent --add-port=8443/tcp; firewall-cmd --reload; fi
+    if command -v ufw >/dev/null 2>&1; then ufw allow "$PANEL_PORT/tcp"; elif command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --permanent --add-port="$PANEL_PORT/tcp"; firewall-cmd --reload; fi
 else
-    if command -v ufw >/dev/null 2>&1; then echo "Firewall command: sudo ufw allow 8443/tcp"; elif command -v firewall-cmd >/dev/null 2>&1; then echo "Firewall command: sudo firewall-cmd --permanent --add-port=8443/tcp && sudo firewall-cmd --reload"; fi
+    if command -v ufw >/dev/null 2>&1; then echo "Firewall command: sudo ufw allow $PANEL_PORT/tcp"; elif command -v firewall-cmd >/dev/null 2>&1; then echo "Firewall command: sudo firewall-cmd --permanent --add-port=$PANEL_PORT/tcp && sudo firewall-cmd --reload"; fi
 fi
 
 echo
 echo "olcRTC Panel Lite installed"
-echo "url=https://$PUBLIC_IP:8443"
+echo "url=https://$PUBLIC_IP:$PANEL_PORT"
 printf '%s\n' "$CREDS"
 printf '%s\n' "$CERTS"
 echo "No olcRTC instance was created. Create the first one in the UI."

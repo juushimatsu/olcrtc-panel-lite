@@ -31,6 +31,18 @@ sudo olcrtc-panel certificate regenerate --public-ip 203.0.113.20 --config /etc/
 sudo systemctl restart olcrtc-panel
 ```
 
+## HTTPS-порт
+
+Предпочтительный способ для установленной панели: открыть `Настройки → HTTPS и IP`, изменить `HTTPS порт`, сохранить и перезапустить службу:
+
+```bash
+sudo ufw allow 9443/tcp 2>/dev/null || true
+sudo systemctl restart olcrtc-panel.service
+sudo systemctl --no-pager --full status olcrtc-panel.service
+```
+
+Новый адрес будет иметь вид `https://IP_СЕРВЕРА:9443`. Порт не входит в TLS-сертификат, поэтому перевыпускать сертификат не требуется. После проверки нового адреса старое правило можно удалить: `sudo ufw delete allow 8443/tcp`.
+
 ## Диагностика
 
 ```bash
