@@ -5,14 +5,37 @@ umask 077
 PURGE=false
 YES=false
 while [ $# -gt 0 ]; do
-    case "$1" in --purge) PURGE=true ;; --yes|--non-interactive) YES=true ;; -h|--help) echo "Usage: uninstall.sh [--purge] [--yes]"; exit 0 ;; *) echo "Unknown option: $1" >&2; exit 2 ;; esac
+    case "$1" in --purge) PURGE=true ;; --yes|--non-interactive) YES=true ;; -h|--help) echo "Usage: uninstall.sh [--purge] [--yes|--non-interactive]"; exit 0 ;; *) echo "Unknown option: $1" >&2; exit 2 ;; esac
     shift
 done
 [ "$(id -u)" -eq 0 ] || { echo "Run uninstaller as root" >&2; exit 1; }
 
+confirm() {
+    local prompt=$1
+    local answer
+
+    if ! exec 9<>/dev/tty 2>/dev/null; then
+        echo "Cannot read confirmation: no interactive terminal. Re-run with --yes." >&2
+        return 2
+    fi
+    printf '%s' "$prompt" >&9
+    if ! IFS= read -r answer <&9; then
+        exec 9>&-
+        echo "Cannot read confirmation from the terminal. Re-run with --yes." >&2
+        return 2
+    fi
+    exec 9>&-
+    [[ "$answer" =~ ^[Yy]$ ]]
+}
+
 if ! $YES; then
-    read -r -p "Remove olcRTC Panel Lite? [y/N] " answer
-    [[ "$answer" =~ ^[Yy]$ ]] || exit 0
+    if confirm "Remove olcRTC Panel Lite? [y/N] "; then
+        :
+    else
+        confirmation_status=$?
+        [ "$confirmation_status" -eq 1 ] && exit 0
+        exit "$confirmation_status"
+    fi
 fi
 
 systemctl stop olcrtc-panel.service 2>/dev/null || true
@@ -43,8 +66,12 @@ if $PURGE; then
     if $YES; then
         remove_backups=true
     else
-        read -r -p "Also delete all backups in $BACKUP_DIR? [y/N] " answer
-        [[ "$answer" =~ ^[Yy]$ ]] && remove_backups=true
+        if confirm "Also delete all backups in $BACKUP_DIR? [y/N] "; then
+            remove_backups=true
+        else
+            confirmation_status=$?
+            [ "$confirmation_status" -eq 2 ] && exit "$confirmation_status"
+        fi
     fi
     $remove_backups && rm -rf "$BACKUP_DIR"
 fi

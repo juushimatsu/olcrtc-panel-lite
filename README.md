@@ -63,13 +63,21 @@ sudo bash install.sh --configure-firewall
 curl -fsSL https://raw.githubusercontent.com/juushimatsu/olcrtc-panel-lite/master/uninstall.sh | sudo bash
 ```
 
+Подтверждение читается непосредственно из терминала, поэтому команда работает и при передаче скрипта через pipe. Для удаления без вопросов:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/juushimatsu/olcrtc-panel-lite/master/uninstall.sh \
+  | sudo bash -s -- --yes
+```
+
 Обычное удаление сначала создаёт recovery archive с mode `0600` в `/var/backups/olcrtc-panel/`. Такой archive содержит секреты.
 
 ```bash
-sudo bash uninstall.sh --purge
+curl -fsSL https://raw.githubusercontent.com/juushimatsu/olcrtc-panel-lite/master/uninstall.sh \
+  | sudo bash -s -- --purge --yes
 ```
 
-`--purge` удаляет live state, а backups - только после отдельного подтверждения.
+`--purge` удаляет live state, а backups — после отдельного подтверждения. Вместе с `--yes` все backups удаляются без дополнительного вопроса.
 
 ## Локальная разработка
 
