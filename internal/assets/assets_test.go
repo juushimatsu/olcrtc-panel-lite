@@ -81,7 +81,12 @@ func TestInstanceRuntimeAssetsPreserveExecutableAccessAndBoundRestarts(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"chmod 0710 \"$directory\"", "chown root:olcrtc \"$directory/olcrtc\""} {
+	for _, required := range []string{
+		"chmod 0710 \"$directory\"",
+		"chown root:olcrtc \"$directory/olcrtc\"",
+		"chmod 0710 /etc/olcrtc-panel",
+		"chmod 0640 \"$file\"",
+	} {
 		if !strings.Contains(string(updater), required) {
 			t.Fatalf("updater is missing %q", required)
 		}

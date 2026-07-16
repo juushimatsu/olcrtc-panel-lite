@@ -226,6 +226,7 @@ func (m *Manager) Start(ctx context.Context, id int64) error {
 	if _, err := m.store.Instance(ctx, id); err != nil {
 		return err
 	}
+	m.applyOwnership(id)
 	if err := m.systemd.Start(ctx, id); err != nil {
 		return err
 	}
@@ -245,6 +246,7 @@ func (m *Manager) Restart(ctx context.Context, id int64) error {
 	if _, err := m.store.Instance(ctx, id); err != nil {
 		return err
 	}
+	m.applyOwnership(id)
 	if err := m.systemd.Restart(ctx, id); err != nil {
 		return err
 	}
@@ -467,11 +469,21 @@ func (m *Manager) applyOwnership(id int64) {
 	if uidErr != nil || gidErr != nil {
 		return
 	}
+	configRoot := filepath.Dir(m.instancesDir)
+	_ = os.Chown(configRoot, 0, gid)
+	_ = os.Chmod(configRoot, 0o710)
+	_ = os.Chown(m.instancesDir, 0, gid)
+	_ = os.Chmod(m.instancesDir, 0o750)
 	_ = os.Chown(m.instancePath(id), 0, gid)
+	_ = os.Chmod(m.instancePath(id), 0o750)
 	_ = os.Chown(m.configPath(id), 0, gid)
+	_ = os.Chmod(m.configPath(id), 0o640)
 	_ = os.Chown(m.keyPath(id), 0, gid)
+	_ = os.Chmod(m.keyPath(id), 0o640)
 	_ = os.Chown(m.runtimePath(id), uid, gid)
+	_ = os.Chmod(m.runtimePath(id), 0o750)
 	_ = os.Chown(filepath.Join(m.runtimePath(id), "data"), uid, gid)
+	_ = os.Chmod(filepath.Join(m.runtimePath(id), "data"), 0o750)
 }
 
 // Store exposes persistence to subscription resolution and traffic collection.

@@ -24,6 +24,36 @@ set_bundle_permissions() {
     fi
 }
 
+repair_instance_permissions() {
+    local directory instance_id runtime file
+    [ -d /etc/olcrtc-panel ] || return 0
+    chown root:olcrtc /etc/olcrtc-panel
+    chmod 0710 /etc/olcrtc-panel
+    [ -d /etc/olcrtc-panel/instances ] || return 0
+    chown root:olcrtc /etc/olcrtc-panel/instances
+    chmod 0750 /etc/olcrtc-panel/instances
+    for directory in /etc/olcrtc-panel/instances/[0-9]*; do
+        [ -d "$directory" ] || continue
+        chown root:olcrtc "$directory"
+        chmod 0750 "$directory"
+        for file in "$directory/config.yaml" "$directory/key.hex"; do
+            [ -f "$file" ] || continue
+            chown root:olcrtc "$file"
+            chmod 0640 "$file"
+        done
+        instance_id=${directory##*/}
+        runtime="/var/lib/olcrtc/$instance_id"
+        if [ -d "$runtime" ]; then
+            chown olcrtc:olcrtc "$runtime"
+            chmod 0750 "$runtime"
+        fi
+        if [ -d "$runtime/data" ]; then
+            chown olcrtc:olcrtc "$runtime/data"
+            chmod 0750 "$runtime/data"
+        fi
+    done
+}
+
 install_bundle() {
     [[ "$BUNDLE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid bundle ID" >&2; exit 1; }
     install -d -m 0710 -o root -g olcrtc /var/lib/olcrtc-panel "$RELEASES"
@@ -39,6 +69,7 @@ install_bundle() {
     install -m 0600 "$work/manifest.json" "$target/manifest.json"
     current=$(readlink -f "$RELEASES/current" || true)
     [ -n "$current" ] && set_bundle_permissions "$current"
+    repair_instance_permissions
     mapfile -t active < <(systemctl list-units 'olcrtc-instance@*.service' --state=active --no-legend | awk '{print $1}')
     [ -n "$current" ] && ln -sfn "$current" "$RELEASES/previous"
     ln -sfn "$target" "$RELEASES/current"
@@ -73,6 +104,7 @@ rollback() {
     [ -n "$previous" ] && set_bundle_permissions "$previous"
     [ -x "$previous/olcrtc-panel" ] || { echo "previous bundle is unavailable" >&2; exit 1; }
     current=$(readlink -f "$RELEASES/current" || true)
+    repair_instance_permissions
     ln -sfn "$previous" "$RELEASES/current"
     [ -n "$current" ] && ln -sfn "$current" "$RELEASES/previous"
     ln -sfn "$RELEASES/current/olcrtc-panel" /usr/local/bin/olcrtc-panel

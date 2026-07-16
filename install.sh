@@ -114,6 +114,38 @@ repair_release_permissions() {
     fi
 }
 
+repair_instance_permissions() {
+    local directory instance_id runtime file
+
+    id olcrtc >/dev/null 2>&1 || return 0
+    [ -d /etc/olcrtc-panel ] || return 0
+    chown root:olcrtc /etc/olcrtc-panel
+    chmod 0710 /etc/olcrtc-panel
+    [ -d /etc/olcrtc-panel/instances ] || return 0
+    chown root:olcrtc /etc/olcrtc-panel/instances
+    chmod 0750 /etc/olcrtc-panel/instances
+    for directory in /etc/olcrtc-panel/instances/[0-9]*; do
+        [ -d "$directory" ] || continue
+        chown root:olcrtc "$directory"
+        chmod 0750 "$directory"
+        for file in "$directory/config.yaml" "$directory/key.hex"; do
+            [ -f "$file" ] || continue
+            chown root:olcrtc "$file"
+            chmod 0640 "$file"
+        done
+        instance_id=${directory##*/}
+        runtime="/var/lib/olcrtc/$instance_id"
+        if [ -d "$runtime" ]; then
+            chown olcrtc:olcrtc "$runtime"
+            chmod 0750 "$runtime"
+        fi
+        if [ -d "$runtime/data" ]; then
+            chown olcrtc:olcrtc "$runtime/data"
+            chmod 0750 "$runtime/data"
+        fi
+    done
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --install) MODE=install ;;
@@ -169,6 +201,7 @@ fi
 if [ -x /usr/local/bin/olcrtc-panel ] && [ "$MODE" = install ] && [ -z "$RELEASE_VERSION" ]; then
     if installation_complete; then
         repair_release_permissions
+        repair_instance_permissions
         echo "olcrtc-panel is already installed. Current status:"
         echo "version=$(/usr/local/bin/olcrtc-panel version)"
         systemctl is-active olcrtc-panel.service 2>/dev/null || true
@@ -250,12 +283,13 @@ fi
 
 id olcrtc >/dev/null 2>&1 || useradd --system --home-dir /var/lib/olcrtc --shell /usr/sbin/nologin olcrtc
 id olcrtc-wb >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/olcrtc-wb --shell /usr/sbin/nologin olcrtc-wb
-install -d -m 0700 -o root -g root /etc/olcrtc-panel
+install -d -m 0710 -o root -g olcrtc /etc/olcrtc-panel
 install -d -m 0710 -o root -g olcrtc /var/lib/olcrtc-panel "$RELEASES"
 install -d -m 0750 -o root -g olcrtc /etc/olcrtc-panel/instances
 install -d -m 0750 -o olcrtc -g olcrtc /var/lib/olcrtc
 install -d -m 0700 -o olcrtc-wb -g olcrtc-wb /var/lib/olcrtc-wb
 install -d -m 0750 -o olcrtc-wb -g olcrtc-wb /run/olcrtc-wb
+repair_instance_permissions
 
 TARGET="$RELEASES/$BUNDLE"
 install -d -m 0710 -o root -g olcrtc "$TARGET"
