@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-REPOSITORY=${OLCRTC_PANEL_REPO:-openlibrecommunity/olcrtc-panel-lite}
+REPOSITORY=${OLCRTC_PANEL_REPO:-juushimatsu/olcrtc-panel-lite}
 CONFIG=/etc/olcrtc-panel/config.yaml
 RELEASES=/var/lib/olcrtc-panel/releases
 MODE=install

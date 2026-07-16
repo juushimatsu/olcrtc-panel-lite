@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/model"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
 )
 
 // ApplyTrafficEvent records a journal event exactly once and updates counters.

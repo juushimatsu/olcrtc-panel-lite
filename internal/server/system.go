@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/backup"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/certificates"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/redact"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/sysinfo"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/backup"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/certificates"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/redact"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/sysinfo"
 )
 
 func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,6 @@
 [Unit]
 Description=olcRTC Panel Lite
-Documentation=https://github.com/openlibrecommunity/olcrtc-panel-lite
+Documentation=https://github.com/juushimatsu/olcrtc-panel-lite
 After=network-online.target
 Wants=network-online.target
 

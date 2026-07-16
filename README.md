@@ -23,7 +23,7 @@
 После публикации репозитория и release bundle:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/openlibrecommunity/olcrtc-panel-lite/master/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/juushimatsu/olcrtc-panel-lite/master/install.sh | sudo bash
 ```
 
 Для другого owner/repository:
@@ -51,7 +51,7 @@ sudo bash install.sh --configure-firewall
 ## Удаление
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/openlibrecommunity/olcrtc-panel-lite/master/uninstall.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/juushimatsu/olcrtc-panel-lite/master/uninstall.sh | sudo bash
 ```
 
 Обычное удаление сначала создаёт recovery archive с mode `0600` в `/var/backups/olcrtc-panel/`. Такой archive содержит секреты.
@@ -119,4 +119,4 @@ Upstream source не является частью runtime-репозитори�
 
 ## Лицензия
 
-Код панели распространяется по WTFPL. Зависимости и официальный olcRTC сохраняют собственные лицензии, перечисленные в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Код панели распространяется по MIT. Зависимости и официальный olcRTC сохраняют собственные лицензии, перечисленные в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

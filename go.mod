@@ -1,4 +1,4 @@
-module github.com/openlibrecommunity/olcrtc-panel-lite
+module github.com/juushimatsu/olcrtc-panel-lite
 
 go 1.26.0
 

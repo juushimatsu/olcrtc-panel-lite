@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/model"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
 )
 
 // StandardURI renders docs/uri.md exactly, without private auth tokens.

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/store"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/store"
 )
 
 var trafficPattern = regexp.MustCompile(`^traffic: session=([^\s]+) addr=([^\s]+) in=([0-9]+) out=([0-9]+)$`)

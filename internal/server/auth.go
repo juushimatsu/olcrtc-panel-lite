@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/model"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/security"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/security"
 )
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

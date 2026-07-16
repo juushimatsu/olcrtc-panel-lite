@@ -3,7 +3,11 @@
 /temp-files/
 /.agents/
 /.codex/
-
+.claude/
+/AGENTS.md
+/CLAUDE.md
+AGENTS.md
+CLAUDE.md
 # GitNexus local knowledge graph
 /.gitnexus/
 

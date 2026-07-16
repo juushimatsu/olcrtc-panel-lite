@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/certificates"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/redact"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/certificates"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/redact"
 )
 
 var bundlePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)

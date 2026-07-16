@@ -4,7 +4,7 @@ umask 077
 
 ACTION=${1:-}
 BUNDLE=${2:-}
-REPOSITORY=$(cat /etc/olcrtc-panel/repository 2>/dev/null || echo "openlibrecommunity/olcrtc-panel-lite")
+REPOSITORY=$(cat /etc/olcrtc-panel/repository 2>/dev/null || echo "juushimatsu/olcrtc-panel-lite")
 RELEASES=/var/lib/olcrtc-panel/releases
 ARCH=$(dpkg --print-architecture)
 case "$ARCH" in amd64|arm64) ;; *) echo "unsupported architecture" >&2; exit 1 ;; esac

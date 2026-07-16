@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/store"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/store"
 )
 
 func TestCreateOrdinaryBackup(t *testing.T) {

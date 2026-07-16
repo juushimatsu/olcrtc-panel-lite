@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/model"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
 )
 
 const instanceColumns = `i.id, i.name, i.provider, i.transport, i.room_id, i.room_channel,

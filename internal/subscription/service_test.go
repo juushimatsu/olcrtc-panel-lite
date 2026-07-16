@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/instance"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/model"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/security"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/store"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/systemd"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/instance"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/security"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/store"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/systemd"
 )
 
 func TestStandardRendererBindsMetadataToURI(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/model"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
 	"gopkg.in/yaml.v3"
 )
 

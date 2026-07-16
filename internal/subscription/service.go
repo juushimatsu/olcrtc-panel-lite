@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/instance"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/mirror"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/model"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/security"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/store"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/instance"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/mirror"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/security"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/store"
 )
 
 // Service resolves linked entries at request time.

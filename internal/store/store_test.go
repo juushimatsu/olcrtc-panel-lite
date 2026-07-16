@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/model"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
 )
 
 func openTestStore(t *testing.T) *Store {

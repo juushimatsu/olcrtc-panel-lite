@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/config"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/model"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/security"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/store"
-	"github.com/openlibrecommunity/olcrtc-panel-lite/internal/subscription"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/config"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/security"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/store"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/subscription"
 )
 
 var slugPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)

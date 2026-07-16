@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/openlibrecommunity/olcrtc-panel-lite/docs/manifest.schema.json",
+  "$id": "https://github.com/juushimatsu/olcrtc-panel-lite/docs/manifest.schema.json",
   "title": "olcrtc-panel release bundle",
   "type": "object",
   "required": ["bundle_id", "panel_version", "upstream_repository", "upstream_branch", "upstream_sha", "upstream_commit_time", "build_time", "go_version", "supported_platforms", "assets", "minimum_installer_version"],
