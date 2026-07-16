@@ -17,6 +17,7 @@ write_state() {
 }
 trap 'write_state error "Установка компонентов завершилась с ошибкой" 0' ERR
 
+# shellcheck disable=SC1091
 . /etc/os-release
 case "${ID:-}" in ubuntu|debian) ;; *) echo "Unsupported OS" >&2; exit 1 ;; esac
 [ "$(dpkg --print-architecture)" = amd64 ] || { echo "WB automation requires amd64" >&2; exit 1; }

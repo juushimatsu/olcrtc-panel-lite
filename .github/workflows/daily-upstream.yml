@@ -88,4 +88,4 @@ jobs:
         if: steps.upstream.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$bundle" dist/* --title "$bundle" --notes "Panel 0.1.0 with official olcRTC master ${{ steps.upstream.outputs.sha }}" --latest
+        run: gh release create "$bundle" dist/* --repo "$GITHUB_REPOSITORY" --title "$bundle" --notes "Panel 0.1.0 with official olcRTC master ${{ steps.upstream.outputs.sha }}" --latest

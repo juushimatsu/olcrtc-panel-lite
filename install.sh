@@ -82,6 +82,7 @@ if [ -x /usr/local/bin/olcrtc-panel ] && [ "$MODE" = install ] && [ -z "$VERSION
 fi
 
 [ -r /etc/os-release ] || { echo "Unsupported system" >&2; exit 1; }
+# shellcheck disable=SC1091
 . /etc/os-release
 case "${ID:-}" in ubuntu) [[ "${VERSION_ID:-}" == "22.04" || "${VERSION_ID:-}" == "24.04" ]] || echo "Warning: Ubuntu ${VERSION_ID:-unknown} is outside the tested matrix" ;; debian) [[ "${VERSION_ID:-}" == "12" ]] || echo "Warning: Debian ${VERSION_ID:-unknown} is outside the tested matrix" ;; *) echo "Only Ubuntu and Debian are supported" >&2; exit 1 ;; esac
 command -v systemctl >/dev/null || { echo "systemd is required" >&2; exit 1; }

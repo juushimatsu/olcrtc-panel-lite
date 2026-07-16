@@ -7,12 +7,14 @@ write_state() { printf '{"phase":"%s","message":"%s","percent":%s,"updated_at":%
 
 write_state stopping "Остановка браузерной сессии" 10
 systemctl stop olcrtc-wb-session.service 2>/dev/null || true
-packages=""
-[ -f "$INSTALL_DIR/packages-installed-by-panel" ] && packages=$(tr '\n' ' ' < "$INSTALL_DIR/packages-installed-by-panel")
+packages=()
+if [ -f "$INSTALL_DIR/packages-installed-by-panel" ]; then
+    mapfile -t packages < "$INSTALL_DIR/packages-installed-by-panel"
+fi
 write_state cleaning "Удаление профиля и cookies" 40
 rm -rf /var/lib/olcrtc-wb /run/olcrtc-wb "$INSTALL_DIR"
-if [ -n "$packages" ]; then
+if [ "${#packages[@]}" -gt 0 ]; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get purge -y $packages || true
+    apt-get purge -y "${packages[@]}" || true
 fi
 write_state completed "Компоненты автоматизации удалены" 100
