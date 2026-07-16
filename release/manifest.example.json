@@ -1,0 +1,18 @@
+{
+  "bundle_id": "bundle-20260716-01234567",
+  "panel_version": "0.1.0",
+  "upstream_repository": "https://github.com/openlibrecommunity/olcrtc",
+  "upstream_branch": "master",
+  "upstream_sha": "0123456789abcdef0123456789abcdef01234567",
+  "upstream_commit_time": "2026-07-16T12:00:00Z",
+  "build_time": "2026-07-16T13:00:00Z",
+  "go_version": "go1.26.3",
+  "supported_platforms": ["linux/amd64", "linux/arm64"],
+  "assets": {
+    "olcrtc-panel-linux-amd64": {"sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "olcrtc-panel-linux-arm64": {"sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "olcrtc-linux-amd64": {"sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "olcrtc-linux-arm64": {"sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+  },
+  "minimum_installer_version": "0.1.0"
+}

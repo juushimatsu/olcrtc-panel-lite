@@ -1,0 +1,37 @@
+[Unit]
+Description=olcRTC instance %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=olcrtc
+Group=olcrtc
+UMask=0027
+WorkingDirectory=/var/lib/olcrtc/%i
+ExecStart=/usr/local/bin/olcrtc /etc/olcrtc-panel/instances/%i/config.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+IPAccounting=yes
+StateDirectory=olcrtc/%i
+StateDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/etc/olcrtc-panel/instances/%i
+ReadWritePaths=/var/lib/olcrtc/%i
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

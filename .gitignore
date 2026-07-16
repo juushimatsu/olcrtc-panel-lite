@@ -1,0 +1,64 @@
+# Local task and reference material
+/TZ_OLCRTC_*.md
+/temp-files/
+/.agents/
+/.codex/
+
+# GitNexus local knowledge graph
+/.gitnexus/
+
+# Go build and test output
+/build/
+/dist/
+/bin/
+/*.exe
+/*.test
+/*.out
+/coverage*.txt
+/coverage*.html
+/profiles/
+
+# Runtime state and secrets
+/.olcrtc-panel-dev/
+/.dev-data/
+/**/*.db
+/**/*.db-shm
+/**/*.db-wal
+/**/*.sqlite
+/**/*.sqlite3
+/**/master.key
+/**/key.hex
+/**/ca.key
+/**/server.key
+/**/*.pem
+/**/*.crt
+/*.tar.gz
+/SHA256SUMS
+/manifest.json
+
+# Optional WB dependencies and browser data
+node_modules/
+playwright-report/
+test-results/
+.cache/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+config.local.yaml
+*.local.yaml
+*.log
+*.pid
+*.tmp
+*.bak
+*~
+
+# Editors and operating systems
+/.idea/
+/.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini

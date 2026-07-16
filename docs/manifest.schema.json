@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/openlibrecommunity/olcrtc-panel-lite/docs/manifest.schema.json",
+  "title": "olcrtc-panel release bundle",
+  "type": "object",
+  "required": ["bundle_id", "panel_version", "upstream_repository", "upstream_branch", "upstream_sha", "upstream_commit_time", "build_time", "go_version", "supported_platforms", "assets", "minimum_installer_version"],
+  "properties": {
+    "bundle_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"},
+    "panel_version": {"type": "string"},
+    "upstream_repository": {"const": "https://github.com/openlibrecommunity/olcrtc"},
+    "upstream_branch": {"const": "master"},
+    "upstream_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "upstream_commit_time": {"type": "string", "format": "date-time"},
+    "build_time": {"type": "string", "format": "date-time"},
+    "go_version": {"type": "string"},
+    "supported_platforms": {"type": "array", "items": {"enum": ["linux/amd64", "linux/arm64"]}, "minItems": 2, "uniqueItems": true},
+    "assets": {"type": "object", "additionalProperties": {"type": "object", "required": ["sha256"], "properties": {"sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}},
+    "minimum_installer_version": {"type": "string"}
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,53 @@
+name: quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Formatting
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Vet
+        run: go vet ./...
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+      - name: Unit and integration tests
+        run: go test -race -count=1 -timeout=10m ./...
+      - name: Frontend and WB syntax
+        run: |
+          node --check internal/web/static/app.js
+          node --check internal/assets/files/wb/worker.mjs
+      - name: Shell quality
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          bash -n install.sh uninstall.sh internal/assets/files/wb/*.sh internal/assets/files/update/*.sh
+          shellcheck install.sh uninstall.sh internal/assets/files/wb/*.sh internal/assets/files/update/*.sh
+      - name: Cross builds
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /tmp/olcrtc-panel-amd64 ./cmd/olcrtc-panel
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /tmp/olcrtc-panel-arm64 ./cmd/olcrtc-panel
+      - name: Module inventory
+        run: go list -m -json all > /tmp/modules.json
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2

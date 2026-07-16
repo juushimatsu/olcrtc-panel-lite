@@ -1,0 +1,34 @@
+[Unit]
+Description=olcRTC Panel Lite
+Documentation=https://github.com/openlibrecommunity/olcrtc-panel-lite
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/local/bin/olcrtc-panel serve --config /etc/olcrtc-panel/config.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+ReadWritePaths=/etc/olcrtc-panel /var/lib/olcrtc-panel /var/lib/olcrtc /var/lib/olcrtc-wb /run/olcrtc-wb /etc/systemd/system
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

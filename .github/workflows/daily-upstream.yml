@@ -1,0 +1,79 @@
+name: daily upstream bundle
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: panel }
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache-dependency-path: panel/go.sum
+      - name: Clone immutable upstream master
+        run: git clone --depth 1 --recurse-submodules --branch master https://github.com/openlibrecommunity/olcrtc.git upstream
+      - name: Record and compare upstream SHA
+        id: upstream
+        shell: bash
+        run: |
+          sha=$(git -C upstream rev-parse HEAD)
+          commit_time=$(git -C upstream show -s --format=%cI HEAD)
+          test -z "$(git -C upstream status --porcelain)"
+          previous=$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/manifest.json" | jq -r '.upstream_sha // empty' || true)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:8}" >> "$GITHUB_OUTPUT"
+          echo "commit_time=$commit_time" >> "$GITHUB_OUTPUT"
+          if [ "$sha" = "$previous" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+      - name: Install upstream quality tools
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          go install github.com/magefile/mage@v1.17.2
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+      - name: Upstream quality gates
+        if: steps.upstream.outputs.changed == 'true'
+        working-directory: upstream
+        run: mage check
+      - name: Panel quality gates
+        if: steps.upstream.outputs.changed == 'true'
+        working-directory: panel
+        run: |
+          test -z "$(gofmt -l cmd internal)"
+          go vet ./...
+          go test -race -count=1 ./...
+      - name: Build unmodified upstream and panel
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            (cd upstream && CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags='-s -w' -o "../dist/olcrtc-linux-$arch" ./cmd/olcrtc)
+            (cd panel && CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags='-s -w' -o "../dist/olcrtc-panel-linux-$arch" ./cmd/olcrtc-panel)
+          done
+          cp panel/install.sh panel/uninstall.sh dist/
+          (cd dist && sha256sum olcrtc-panel-linux-* olcrtc-linux-* install.sh uninstall.sh > SHA256SUMS)
+      - name: Create manifest
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          bundle="bundle-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.short }}"
+          panel_version="0.1.0"
+          jq -n \
+            --arg bundle "$bundle" --arg version "$panel_version" --arg sha "${{ steps.upstream.outputs.sha }}" \
+            --arg commit_time "${{ steps.upstream.outputs.commit_time }}" --arg build_time "$(date -u +%FT%TZ)" --arg goversion "$(go version | awk '{print $3}')" \
+            '{bundle_id:$bundle,panel_version:$version,upstream_repository:"https://github.com/openlibrecommunity/olcrtc",upstream_branch:"master",upstream_sha:$sha,upstream_commit_time:$commit_time,build_time:$build_time,go_version:$goversion,supported_platforms:["linux/amd64","linux/arm64"],assets:{},minimum_installer_version:"0.1.0"}' > dist/manifest.json
+          while read -r sum file; do jq --arg f "$file" --arg s "$sum" '.assets[$f]={sha256:$s}' dist/manifest.json > dist/manifest.tmp && mv dist/manifest.tmp dist/manifest.json; done < dist/SHA256SUMS
+          echo "bundle=$bundle" >> "$GITHUB_ENV"
+          (cd panel && go list -m -json all) > dist/modules.json
+      - name: Publish only successful bundle
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$bundle" dist/* --title "$bundle" --notes "Panel 0.1.0 with official olcRTC master ${{ steps.upstream.outputs.sha }}" --latest
