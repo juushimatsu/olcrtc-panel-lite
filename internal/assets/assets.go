@@ -43,7 +43,7 @@ func Install(root string) error {
 		}
 		target := filepath.Join(root, filepath.FromSlash(destination.path))
 		resolved, err := filepath.Abs(target)
-		if err != nil || (resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator))) {
+		if err != nil || !pathWithinRoot(root, resolved) {
 			return fmt.Errorf("asset target escapes root: %s", target)
 		}
 		if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
@@ -54,6 +54,14 @@ func Install(root string) error {
 		}
 	}
 	return nil
+}
+
+func pathWithinRoot(root, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func atomicWrite(path string, data []byte, mode os.FileMode) error {

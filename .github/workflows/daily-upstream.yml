@@ -37,7 +37,11 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "short=${sha:0:8}" >> "$GITHUB_OUTPUT"
           echo "commit_time=$commit_time" >> "$GITHUB_OUTPUT"
-          if [ "$sha" = "$previous" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "$sha" = "$previous" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install upstream quality tools
         if: steps.upstream.outputs.changed == 'true'
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
@@ -75,7 +79,8 @@ jobs:
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
-          bundle="bundle-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.short }}"
+          panel_short=${GITHUB_SHA:0:8}
+          bundle="bundle-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.short }}-${panel_short}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
           panel_version="0.1.0"
           jq -n \
             --arg bundle "$bundle" --arg version "$panel_version" --arg sha "${{ steps.upstream.outputs.sha }}" \
@@ -88,4 +93,4 @@ jobs:
         if: steps.upstream.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$bundle" dist/* --repo "$GITHUB_REPOSITORY" --title "$bundle" --notes "Panel 0.1.0 with official olcRTC master ${{ steps.upstream.outputs.sha }}" --latest
+        run: gh release create "$bundle" dist/* --repo "$GITHUB_REPOSITORY" --title "$bundle" --notes "Panel commit $GITHUB_SHA with official olcRTC master ${{ steps.upstream.outputs.sha }}" --latest

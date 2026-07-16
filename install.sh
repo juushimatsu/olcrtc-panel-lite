@@ -22,6 +22,14 @@ Usage: install.sh [--install|--update|--status|--reset-credentials|--regenerate-
 EOF
 }
 
+installation_complete() {
+    [ -x /usr/local/bin/olcrtc-panel ] &&
+        [ -f "$CONFIG" ] &&
+        [ -f /etc/systemd/system/olcrtc-panel.service ] &&
+        [ -f /var/lib/olcrtc-panel/tls/server.crt ] &&
+        [ -f /var/lib/olcrtc-panel/panel.db ]
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --install) MODE=install ;;
@@ -75,11 +83,14 @@ if [ "$MODE" = regenerate-cert ]; then
 fi
 
 if [ -x /usr/local/bin/olcrtc-panel ] && [ "$MODE" = install ] && [ -z "$RELEASE_VERSION" ]; then
-    echo "olcrtc-panel is already installed. Current status:"
-    echo "version=$(/usr/local/bin/olcrtc-panel version)"
-    systemctl is-active olcrtc-panel.service 2>/dev/null || true
-    echo "Use --update to install a new verified bundle."
-    exit 0
+    if installation_complete; then
+        echo "olcrtc-panel is already installed. Current status:"
+        echo "version=$(/usr/local/bin/olcrtc-panel version)"
+        systemctl is-active olcrtc-panel.service 2>/dev/null || true
+        echo "Use --update to install a new verified bundle."
+        exit 0
+    fi
+    echo "Incomplete olcrtc-panel installation detected; resuming repair."
 fi
 
 [ -r /etc/os-release ] || { echo "Unsupported system" >&2; exit 1; }
