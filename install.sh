@@ -6,7 +6,8 @@ REPOSITORY=${OLCRTC_PANEL_REPO:-juushimatsu/olcrtc-panel-lite}
 CONFIG=/etc/olcrtc-panel/config.yaml
 RELEASES=/var/lib/olcrtc-panel/releases
 MODE=install
-VERSION=""
+# Keep this distinct from VERSION, which is defined by /etc/os-release.
+RELEASE_VERSION=""
 CONFIGURE_FIREWALL=false
 
 [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
@@ -29,7 +30,7 @@ while [ $# -gt 0 ]; do
         --reset-credentials) MODE=reset-credentials ;;
         --regenerate-cert) MODE=regenerate-cert ;;
         --uninstall) MODE=uninstall ;;
-        --version) shift; VERSION=${1:-}; [ -n "$VERSION" ] || { echo "--version requires a value" >&2; exit 2; } ;;
+        --version) shift; RELEASE_VERSION=${1:-}; [ -n "$RELEASE_VERSION" ] || { echo "--version requires a value" >&2; exit 2; } ;;
         --non-interactive) : ;;
         --configure-firewall) CONFIGURE_FIREWALL=true ;;
         -h|--help) usage; exit 0 ;;
@@ -38,8 +39,8 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-if [ -n "$VERSION" ]; then
-    [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid release version: $VERSION" >&2; exit 2; }
+if [ -n "$RELEASE_VERSION" ]; then
+    [[ "$RELEASE_VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid release version: $RELEASE_VERSION" >&2; exit 2; }
 fi
 
 [ "$(id -u)" -eq 0 ] || { echo "Run installer as root" >&2; exit 1; }
@@ -73,7 +74,7 @@ if [ "$MODE" = regenerate-cert ]; then
     exit
 fi
 
-if [ -x /usr/local/bin/olcrtc-panel ] && [ "$MODE" = install ] && [ -z "$VERSION" ]; then
+if [ -x /usr/local/bin/olcrtc-panel ] && [ "$MODE" = install ] && [ -z "$RELEASE_VERSION" ]; then
     echo "olcrtc-panel is already installed. Current status:"
     echo "version=$(/usr/local/bin/olcrtc-panel version)"
     systemctl is-active olcrtc-panel.service 2>/dev/null || true
@@ -98,8 +99,8 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 RELEASES_API="https://api.github.com/repos/$REPOSITORY/releases"
-if [ -n "$VERSION" ]; then
-    RELEASE_API="$RELEASES_API/tags/$VERSION"
+if [ -n "$RELEASE_VERSION" ]; then
+    RELEASE_API="$RELEASES_API/tags/$RELEASE_VERSION"
 else
     RELEASE_API="$RELEASES_API/latest"
 fi
@@ -108,8 +109,8 @@ if ! curl -fsSL --retry 3 --connect-timeout 15 \
     -H 'Accept: application/vnd.github+json' \
     -H 'X-GitHub-Api-Version: 2022-11-28' \
     "$RELEASE_API" -o "$WORK/release.json"; then
-    if [ -n "$VERSION" ]; then
-        echo "GitHub Release '$VERSION' was not found in $REPOSITORY." >&2
+    if [ -n "$RELEASE_VERSION" ]; then
+        echo "GitHub Release '$RELEASE_VERSION' was not found in $REPOSITORY." >&2
     else
         echo "No published GitHub Release was found in $REPOSITORY." >&2
     fi
@@ -131,7 +132,7 @@ for file in manifest.json SHA256SUMS "olcrtc-panel-linux-$ARCH" "olcrtc-linux-$A
 done
 (cd "$WORK"; grep "  olcrtc-panel-linux-$ARCH$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-linux-$ARCH$" SHA256SUMS | sha256sum -c -)
 BUNDLE=$(jq -r '.bundle_id // empty' "$WORK/manifest.json")
-[ -n "$BUNDLE" ] || BUNDLE=${VERSION:-$(date -u +%Y%m%d%H%M%S)}
+[ -n "$BUNDLE" ] || BUNDLE=${RELEASE_VERSION:-$(date -u +%Y%m%d%H%M%S)}
 [[ "$BUNDLE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Manifest contains an invalid bundle_id" >&2; exit 1; }
 
 if [ "$MODE" = update ] && [ -x /usr/local/bin/olcrtc-panel ] && [ -x /usr/lib/olcrtc-panel/update.sh ]; then
