@@ -127,14 +127,15 @@ func (m *Manager) Update(ctx context.Context, item model.Instance, clearAuth, cl
 	}
 	status, _ := m.systemd.Status(ctx, item.ID)
 	if status.State == "running" {
-		if err := m.systemd.Restart(ctx, item.ID); err == nil {
-			err = systemd.WaitActive(ctx, m.systemd, item.ID, 20*time.Second)
+		restartErr := m.systemd.Restart(ctx, item.ID)
+		if restartErr == nil {
+			restartErr = systemd.WaitActive(ctx, m.systemd, item.ID, 20*time.Second)
 		}
-		if err != nil {
+		if restartErr != nil {
 			_, _ = m.store.UpdateInstance(ctx, old)
 			_ = atomicWrite(m.configPath(item.ID), oldConfig, 0o640)
 			_ = m.systemd.Restart(ctx, item.ID)
-			return model.Instance{}, fmt.Errorf("new configuration failed, previous configuration restored: %w", err)
+			return model.Instance{}, fmt.Errorf("new configuration failed, previous configuration restored: %w", restartErr)
 		}
 	}
 	return m.decorate(ctx, updated)
@@ -185,14 +186,15 @@ func (m *Manager) RotateKey(ctx context.Context, id int64) error {
 	m.applyOwnership(id)
 	status, _ := m.systemd.Status(ctx, id)
 	if status.State == "running" {
-		if err := m.systemd.Restart(ctx, id); err == nil {
-			err = systemd.WaitActive(ctx, m.systemd, id, 20*time.Second)
+		restartErr := m.systemd.Restart(ctx, id)
+		if restartErr == nil {
+			restartErr = systemd.WaitActive(ctx, m.systemd, id, 20*time.Second)
 		}
-		if err != nil {
+		if restartErr != nil {
 			_ = atomicWrite(m.keyPath(id), []byte(old+"\n"), 0o640)
 			m.applyOwnership(id)
 			_ = m.systemd.Restart(ctx, id)
-			return fmt.Errorf("key rotation failed and was rolled back: %w", err)
+			return fmt.Errorf("key rotation failed and was rolled back: %w", restartErr)
 		}
 	}
 	return nil
@@ -406,7 +408,8 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
-	if err := f.Chmod(mode); err == nil {
+	err = f.Chmod(mode)
+	if err == nil {
 		_, err = f.Write(data)
 	}
 	if err == nil {

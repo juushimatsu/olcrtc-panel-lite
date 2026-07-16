@@ -158,10 +158,10 @@ func validateJitsiRoom(room string) error {
 	}
 	u, err := url.Parse(value)
 	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return errors.New("Jitsi room must be an http/https room URL")
+		return errors.New("jitsi room must be an http/https room URL")
 	}
 	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-		return errors.New("Jitsi room URL must not contain credentials, query or fragment")
+		return errors.New("jitsi room URL must not contain credentials, query or fragment")
 	}
 	return nil
 }
@@ -185,11 +185,11 @@ func validateTransport(item model.Instance) error {
 	switch item.Transport {
 	case "vp8channel":
 		if o.VP8FPS < 1 || o.VP8FPS > 240 || o.VP8Batch < 1 || o.VP8Batch > 4096 {
-			return errors.New("VP8 settings are outside safe ranges")
+			return errors.New("vp8 settings are outside safe ranges")
 		}
 	case "seichannel":
 		if o.SEIFPS < 1 || o.SEIFPS > 240 || o.SEIBatch < 1 || o.SEIBatch > 4096 || o.SEIFragment < 128 || o.SEIFragment > 65535 || o.SEIAckMS < 100 || o.SEIAckMS > 120000 {
-			return errors.New("SEI settings are outside safe ranges")
+			return errors.New("sei settings are outside safe ranges")
 		}
 	case "videochannel":
 		if o.VideoBitrate == "" {

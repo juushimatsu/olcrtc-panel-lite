@@ -41,7 +41,7 @@ func (m *Manager) Create(ctx context.Context) (string, error) {
 	defer os.RemoveAll(work)
 	dbCopy := filepath.Join(work, "panel.db")
 	if _, err := m.db.ExecContext(ctx, `VACUUM INTO ?`, dbCopy); err != nil {
-		return "", fmt.Errorf("SQLite online backup: %w", err)
+		return "", fmt.Errorf("sqlite online backup: %w", err)
 	}
 	archivePath := filepath.Join(m.backupDir, "olcrtc-panel-"+id+".tar.gz")
 	f, err := os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)

@@ -184,7 +184,8 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
-	if err := f.Chmod(mode); err == nil {
+	err = f.Chmod(mode)
+	if err == nil {
 		_, err = f.Write(data)
 	}
 	if err == nil {

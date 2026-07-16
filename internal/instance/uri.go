@@ -129,7 +129,7 @@ func validateURIFields(item model.Instance, key, comment string) error {
 		return errors.New("unsupported URI provider or transport")
 	}
 	if strings.ContainsAny(item.Provider+item.Transport, "?<>@#$\r\n") || strings.ContainsAny(item.RoomID, "?<>@#$\r\n") || strings.ContainsAny(comment, "?<>@#$\r\n") {
-		return fmt.Errorf("URI field contains a reserved separator")
+		return fmt.Errorf("uri field contains a reserved separator")
 	}
 	return nil
 }

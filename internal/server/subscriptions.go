@@ -286,16 +286,17 @@ func (s *Server) handleSubscriptionQR(w http.ResponseWriter, r *http.Request) {
 		format = "standard"
 	}
 	var payload string
-	if format == "standard" {
+	switch format {
+	case "standard":
 		payload = strings.TrimRight(publicBaseURL(s.cfg), "/") + "/sub/" + slug
-	} else if format == "exclave" {
+	case "exclave":
 		b, err := s.subscriptions.Bundle(r.Context(), slug)
 		if err != nil {
 			s.subscriptionError(w, r, err)
 			return
 		}
 		payload = string(b)
-	} else {
+	default:
 		writeError(w, r, http.StatusBadRequest, "invalid_format", "Неизвестный формат QR")
 		return
 	}

@@ -122,7 +122,7 @@ func (c *Client) Upload(ctx context.Context, slug string, payload []byte) (strin
 	trustedUploadHost := host == "uploader.disk.yandex.net" || strings.HasSuffix(host, ".yandex.net") || strings.HasSuffix(host, ".yandex.ru")
 	if err != nil || u.Scheme != "https" || !trustedUploadHost {
 		if !strings.HasPrefix(c.BaseURL, "http://127.0.0.1") && !strings.HasPrefix(c.BaseURL, "http://localhost") {
-			return "", errors.New("Yandex returned an unsafe upload URL")
+			return "", errors.New("yandex returned an unsafe upload URL")
 		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, link.Href, bytes.NewReader(payload))
@@ -137,7 +137,7 @@ func (c *Client) Upload(ctx context.Context, slug string, payload []byte) (strin
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("Yandex upload status %d", resp.StatusCode)
+		return "", fmt.Errorf("yandex upload status %d", resp.StatusCode)
 	}
 	_ = c.requestJSON(ctx, http.MethodPut, "/resources/publish?"+url.Values{"path": {remotePath}}.Encode(), nil, nil)
 	var metadata struct {
@@ -147,7 +147,7 @@ func (c *Client) Upload(ctx context.Context, slug string, payload []byte) (strin
 		return "", fmt.Errorf("read Yandex mirror URL: %w", err)
 	}
 	if metadata.PublicURL == "" {
-		return "", errors.New("Yandex mirror has no public URL")
+		return "", errors.New("yandex mirror has no public URL")
 	}
 	return metadata.PublicURL, nil
 }
@@ -160,7 +160,7 @@ func (c *Client) Delete(ctx context.Context, slug string) error {
 
 func (c *Client) requestJSON(ctx context.Context, method, suffix string, body io.Reader, output any) error {
 	if c.Token == "" {
-		return errors.New("Yandex OAuth token is not configured")
+		return errors.New("yandex OAuth token is not configured")
 	}
 	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+suffix, body)
 	if err != nil {

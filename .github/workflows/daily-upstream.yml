@@ -14,15 +14,18 @@ permissions:
 jobs:
   bundle:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { path: panel }
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.3'
-          cache-dependency-path: panel/go.sum
       - name: Clone immutable upstream master
         run: git clone --depth 1 --recurse-submodules --branch master https://github.com/openlibrecommunity/olcrtc.git upstream
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.3'
+          cache-dependency-path: |
+            panel/go.sum
+            upstream/go.sum
       - name: Record and compare upstream SHA
         id: upstream
         shell: bash
@@ -37,13 +40,19 @@ jobs:
           if [ "$sha" = "$previous" ]; then echo "changed=false" >> "$GITHUB_OUTPUT"; else echo "changed=true" >> "$GITHUB_OUTPUT"; fi
       - name: Install upstream quality tools
         if: steps.upstream.outputs.changed == 'true'
-        run: |
-          go install github.com/magefile/mage@v1.17.2
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-      - name: Upstream quality gates
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+      - name: Upstream vet
         if: steps.upstream.outputs.changed == 'true'
         working-directory: upstream
-        run: mage check
+        run: go vet ./...
+      - name: Upstream lint
+        if: steps.upstream.outputs.changed == 'true'
+        working-directory: upstream
+        run: golangci-lint run --timeout=10m ./...
+      - name: Upstream unit tests
+        if: steps.upstream.outputs.changed == 'true'
+        working-directory: upstream
+        run: go test -count=1 -timeout=10m ./...
       - name: Panel quality gates
         if: steps.upstream.outputs.changed == 'true'
         working-directory: panel

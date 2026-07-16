@@ -145,7 +145,7 @@ func (s *Service) Bundle(ctx context.Context, slug string) ([]byte, error) {
 func (s *Service) SyncMirror(ctx context.Context, slug string) (string, error) {
 	enabled, err := s.store.SettingOrDefault(ctx, "yandex_enabled", "false")
 	if err != nil || enabled != "true" {
-		return "", errors.New("Yandex mirror is disabled globally")
+		return "", errors.New("yandex mirror is disabled globally")
 	}
 	sub, err := s.store.Subscription(ctx, slug)
 	if err != nil {
@@ -176,7 +176,7 @@ func (s *Service) SyncMirror(ctx context.Context, slug string) (string, error) {
 	}
 	tokenEncrypted, _, err := s.store.Setting(ctx, "yandex_oauth_token")
 	if err != nil {
-		return "", errors.New("Yandex OAuth token is not configured")
+		return "", errors.New("yandex OAuth token is not configured")
 	}
 	token, err := s.secrets.Decrypt(tokenEncrypted)
 	if err != nil {

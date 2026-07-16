@@ -334,7 +334,7 @@ func diagnoseProvider(ctx context.Context, item model.Instance) (map[string]any,
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Jitsi недоступен: %w", err)
+		return nil, fmt.Errorf("jitsi недоступен: %w", err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
