@@ -1,8 +1,10 @@
 package assets
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,5 +44,46 @@ func TestPathWithinRoot(t *testing.T) {
 				t.Fatalf("pathWithinRoot(%q, %q) = %v, want %v", root, test.target, got, test.inside)
 			}
 		})
+	}
+}
+
+func TestWBWorkerLoadsPinnedPlaywrightAndReadsAuthorization(t *testing.T) {
+	b, err := fs.ReadFile(files, "files/wb/worker.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(b)
+	for _, required := range []string{
+		"require('/opt/olcrtc-panel/wb/node_modules/playwright')",
+		"request.headerValue('authorization')",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("worker is missing %q", required)
+		}
+	}
+	if strings.Contains(source, "from 'playwright'") {
+		t.Fatal("worker uses bare Playwright import outside its node_modules tree")
+	}
+}
+
+func TestInstanceRuntimeAssetsPreserveExecutableAccessAndBoundRestarts(t *testing.T) {
+	unit, err := fs.ReadFile(files, "files/systemd/olcrtc-instance@.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"StartLimitBurst=3", "RestartPreventExitStatus=203"} {
+		if !strings.Contains(string(unit), required) {
+			t.Fatalf("instance unit is missing %q", required)
+		}
+	}
+
+	updater, err := fs.ReadFile(files, "files/update/update.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"chmod 0710 \"$directory\"", "chown root:olcrtc \"$directory/olcrtc\""} {
+		if !strings.Contains(string(updater), required) {
+			t.Fatalf("updater is missing %q", required)
+		}
 	}
 }

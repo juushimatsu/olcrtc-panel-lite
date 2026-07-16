@@ -195,10 +195,18 @@ func WaitActive(ctx context.Context, controller Controller, id int64, timeout ti
 	defer cancel()
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
+	runningSince := time.Time{}
 	for {
 		status, err := controller.Status(ctx, id)
 		if err == nil && status.State == "running" {
-			return nil
+			if runningSince.IsZero() {
+				runningSince = time.Now()
+			}
+			if time.Since(runningSince) >= time.Second {
+				return nil
+			}
+		} else {
+			runningSince = time.Time{}
 		}
 		if status.State == "failed" {
 			return errors.New("instance entered failed state")

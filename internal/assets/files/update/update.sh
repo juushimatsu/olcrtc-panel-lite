@@ -9,19 +9,36 @@ RELEASES=/var/lib/olcrtc-panel/releases
 ARCH=$(dpkg --print-architecture)
 case "$ARCH" in amd64|arm64) ;; *) echo "unsupported architecture" >&2; exit 1 ;; esac
 
+set_bundle_permissions() {
+    local directory=$1
+    [ -d "$directory" ] || return 0
+    chown root:olcrtc "$directory"
+    chmod 0710 "$directory"
+    if [ -f "$directory/olcrtc-panel" ]; then
+        chown root:root "$directory/olcrtc-panel"
+        chmod 0750 "$directory/olcrtc-panel"
+    fi
+    if [ -f "$directory/olcrtc" ]; then
+        chown root:olcrtc "$directory/olcrtc"
+        chmod 0750 "$directory/olcrtc"
+    fi
+}
+
 install_bundle() {
     [[ "$BUNDLE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid bundle ID" >&2; exit 1; }
+    install -d -m 0710 -o root -g olcrtc /var/lib/olcrtc-panel "$RELEASES"
     target="$RELEASES/$BUNDLE"
     work=$(mktemp -d "$RELEASES/.update-XXXXXX")
     trap 'rm -rf "$work"' EXIT
     base="https://github.com/$REPOSITORY/releases/download/$BUNDLE"
     for file in manifest.json SHA256SUMS "olcrtc-panel-linux-$ARCH" "olcrtc-linux-$ARCH"; do curl -fsSL "$base/$file" -o "$work/$file"; done
     (cd "$work"; grep "  olcrtc-panel-linux-$ARCH$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-linux-$ARCH$" SHA256SUMS | sha256sum -c -)
-    install -d -m 0700 "$target"
-    install -m 0755 "$work/olcrtc-panel-linux-$ARCH" "$target/olcrtc-panel"
-    install -m 0755 "$work/olcrtc-linux-$ARCH" "$target/olcrtc"
+    install -d -m 0710 -o root -g olcrtc "$target"
+    install -m 0750 -o root -g root "$work/olcrtc-panel-linux-$ARCH" "$target/olcrtc-panel"
+    install -m 0750 -o root -g olcrtc "$work/olcrtc-linux-$ARCH" "$target/olcrtc"
     install -m 0600 "$work/manifest.json" "$target/manifest.json"
     current=$(readlink -f "$RELEASES/current" || true)
+    [ -n "$current" ] && set_bundle_permissions "$current"
     mapfile -t active < <(systemctl list-units 'olcrtc-instance@*.service' --state=active --no-legend | awk '{print $1}')
     [ -n "$current" ] && ln -sfn "$current" "$RELEASES/previous"
     ln -sfn "$target" "$RELEASES/current"
@@ -40,6 +57,7 @@ install_bundle() {
     fi
     if $failed; then
         [ -n "$current" ] || { echo "update failed and no previous bundle is available" >&2; exit 1; }
+        set_bundle_permissions "$current"
         ln -sfn "$current" "$RELEASES/current"
         ln -sfn "$RELEASES/current/olcrtc-panel" /usr/local/bin/olcrtc-panel
         ln -sfn "$RELEASES/current/olcrtc" /usr/local/bin/olcrtc
@@ -52,6 +70,7 @@ install_bundle() {
 
 rollback() {
     previous=$(readlink -f "$RELEASES/previous" || true)
+    [ -n "$previous" ] && set_bundle_permissions "$previous"
     [ -x "$previous/olcrtc-panel" ] || { echo "previous bundle is unavailable" >&2; exit 1; }
     current=$(readlink -f "$RELEASES/current" || true)
     ln -sfn "$previous" "$RELEASES/current"

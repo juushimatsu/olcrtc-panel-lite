@@ -1,6 +1,9 @@
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import process from 'node:process';
-import { chromium } from 'playwright';
+
+const require = createRequire(import.meta.url);
+const { chromium } = require('/opt/olcrtc-panel/wb/node_modules/playwright');
 
 const jobPath = process.argv[2] || '/var/lib/olcrtc-wb/job.json';
 const job = JSON.parse(fs.readFileSync(jobPath, 'utf8'));
@@ -63,10 +66,10 @@ async function main() {
     args: ['--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--window-size=1280,800'],
   });
   activeContext = context;
-  context.on('request', request => {
+  context.on('request', async request => {
     try {
       if (!isWBURL(request.url())) return;
-      const authorization = request.headers().authorization || '';
+      const authorization = await request.headerValue('authorization') || '';
       if (/^Bearer\s+\S+/i.test(authorization)) accountToken = authorization.replace(/^Bearer\s+/i, '').trim();
       if (/room|meeting/i.test(request.url())) roomID ||= findRoomID(request.url());
     } catch { /* Ignore malformed third-party requests. */ }

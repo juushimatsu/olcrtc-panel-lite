@@ -27,7 +27,8 @@ installation_complete() {
         [ -f "$CONFIG" ] &&
         [ -f /etc/systemd/system/olcrtc-panel.service ] &&
         [ -f /var/lib/olcrtc-panel/tls/server.crt ] &&
-        [ -f /var/lib/olcrtc-panel/panel.db ]
+        [ -f /var/lib/olcrtc-panel/panel.db ] &&
+        systemctl is-active --quiet olcrtc-panel.service
 }
 
 valid_port() {
@@ -72,6 +73,45 @@ choose_panel_port() {
         fi
     done
     return 1
+}
+
+wait_for_panel() {
+    local port=$1
+    local attempt
+
+    for ((attempt = 0; attempt < 20; attempt++)); do
+        if systemctl is-active --quiet olcrtc-panel.service &&
+            curl -kfsS --connect-timeout 1 --max-time 2 "https://127.0.0.1:$port/" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+repair_release_permissions() {
+    local current
+
+    id olcrtc >/dev/null 2>&1 || return 0
+    [ -d /var/lib/olcrtc-panel ] || return 0
+    chown root:olcrtc /var/lib/olcrtc-panel
+    chmod 0710 /var/lib/olcrtc-panel
+    if [ -d "$RELEASES" ]; then
+        chown root:olcrtc "$RELEASES"
+        chmod 0710 "$RELEASES"
+    fi
+    current=$(readlink -f "$RELEASES/current" 2>/dev/null || true)
+    [ -n "$current" ] && [ -d "$current" ] || return 0
+    chown root:olcrtc "$current"
+    chmod 0710 "$current"
+    if [ -f "$current/olcrtc-panel" ]; then
+        chown root:root "$current/olcrtc-panel"
+        chmod 0750 "$current/olcrtc-panel"
+    fi
+    if [ -f "$current/olcrtc" ]; then
+        chown root:olcrtc "$current/olcrtc"
+        chmod 0750 "$current/olcrtc"
+    fi
 }
 
 while [ $# -gt 0 ]; do
@@ -128,6 +168,7 @@ fi
 
 if [ -x /usr/local/bin/olcrtc-panel ] && [ "$MODE" = install ] && [ -z "$RELEASE_VERSION" ]; then
     if installation_complete; then
+        repair_release_permissions
         echo "olcrtc-panel is already installed. Current status:"
         echo "version=$(/usr/local/bin/olcrtc-panel version)"
         systemctl is-active olcrtc-panel.service 2>/dev/null || true
@@ -209,15 +250,17 @@ fi
 
 id olcrtc >/dev/null 2>&1 || useradd --system --home-dir /var/lib/olcrtc --shell /usr/sbin/nologin olcrtc
 id olcrtc-wb >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/olcrtc-wb --shell /usr/sbin/nologin olcrtc-wb
-install -d -m 0700 -o root -g root /etc/olcrtc-panel /var/lib/olcrtc-panel "$RELEASES"
+install -d -m 0700 -o root -g root /etc/olcrtc-panel
+install -d -m 0710 -o root -g olcrtc /var/lib/olcrtc-panel "$RELEASES"
 install -d -m 0750 -o root -g olcrtc /etc/olcrtc-panel/instances
 install -d -m 0750 -o olcrtc -g olcrtc /var/lib/olcrtc
 install -d -m 0700 -o olcrtc-wb -g olcrtc-wb /var/lib/olcrtc-wb
+install -d -m 0750 -o olcrtc-wb -g olcrtc-wb /run/olcrtc-wb
 
 TARGET="$RELEASES/$BUNDLE"
-install -d -m 0700 -o root -g root "$TARGET"
-install -m 0755 "$WORK/olcrtc-panel-linux-$ARCH" "$TARGET/olcrtc-panel"
-install -m 0755 "$WORK/olcrtc-linux-$ARCH" "$TARGET/olcrtc"
+install -d -m 0710 -o root -g olcrtc "$TARGET"
+install -m 0750 -o root -g root "$WORK/olcrtc-panel-linux-$ARCH" "$TARGET/olcrtc-panel"
+install -m 0750 -o root -g olcrtc "$WORK/olcrtc-linux-$ARCH" "$TARGET/olcrtc"
 install -m 0600 "$WORK/manifest.json" "$TARGET/manifest.json"
 ln -sfn "$TARGET" "$RELEASES/current"
 ln -sfn "$RELEASES/current/olcrtc-panel" /usr/local/bin/olcrtc-panel
@@ -272,6 +315,12 @@ fi
 CERTS=$(/usr/local/bin/olcrtc-panel certificate ensure --config "$CONFIG")
 systemctl daemon-reload
 systemctl enable --now olcrtc-panel.service
+if ! wait_for_panel "$PANEL_PORT"; then
+    echo "olcRTC Panel Lite failed to start HTTPS on port $PANEL_PORT." >&2
+    systemctl --no-pager --full status olcrtc-panel.service >&2 || true
+    journalctl -u olcrtc-panel.service -n 50 --no-pager >&2 || true
+    exit 1
+fi
 
 if $CONFIGURE_FIREWALL; then
     if command -v ufw >/dev/null 2>&1; then ufw allow "$PANEL_PORT/tcp"; elif command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --permanent --add-port="$PANEL_PORT/tcp"; firewall-cmd --reload; fi

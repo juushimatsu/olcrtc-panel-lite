@@ -3,6 +3,7 @@ package systemd
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestUnitValidation(t *testing.T) {
@@ -29,5 +30,25 @@ func TestDisabledManagerLifecycle(t *testing.T) {
 	status, _ = m.Status(ctx, 1)
 	if status.State != "stopped" {
 		t.Fatalf("state=%s", status.State)
+	}
+}
+
+type flappingController struct {
+	Controller
+	calls int
+}
+
+func (c *flappingController) Status(context.Context, int64) (Status, error) {
+	c.calls++
+	if c.calls == 1 {
+		return Status{State: "running"}, nil
+	}
+	return Status{State: "failed"}, nil
+}
+
+func TestWaitActiveRejectsTransientRunningState(t *testing.T) {
+	controller := &flappingController{}
+	if err := WaitActive(context.Background(), controller, 1, time.Second); err == nil {
+		t.Fatal("transient running state was accepted")
 	}
 }

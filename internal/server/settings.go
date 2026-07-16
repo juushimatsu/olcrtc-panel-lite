@@ -25,6 +25,11 @@ import (
 
 var bundlePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
+const (
+	wbNoVNCAddress = "127.0.0.1:6080"
+	wbNoVNCURL     = "/wb/novnc/vnc.html?autoconnect=true&resize=scale&path=wb/novnc/websockify"
+)
+
 func (s *Server) routesSettings(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/settings", s.requireAuth(http.HandlerFunc(s.handleSettingsGet)))
 	mux.Handle("PUT /api/v1/settings", s.requireAuth(http.HandlerFunc(s.handleSettingsPut)))
@@ -211,8 +216,8 @@ func (s *Server) handleWBSettingsPut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
-	if !wbStatus()["installed"].(bool) {
-		writeError(w, r, http.StatusUnprocessableEntity, "wb_not_installed", "Сначала установите WB components")
+	if runtime.GOOS != "linux" || !wbStatus()["installed"].(bool) || !wbRuntimeReady() {
+		writeError(w, r, http.StatusUnprocessableEntity, "wb_not_installed", "WB components установлены не полностью. Переустановите их в настройках")
 		return
 	}
 	expires := time.Now().Add(15 * time.Minute)
@@ -220,13 +225,25 @@ func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "wb_job_failed", "Не удалось подготовить WB job")
 		return
 	}
+	_ = os.Remove("/var/lib/olcrtc-wb/state.json")
+	output, err := exec.CommandContext(r.Context(), "systemctl", "restart", "olcrtc-wb-session.service").CombinedOutput()
+	if err == nil {
+		err = waitForTCPStable(r.Context(), wbNoVNCAddress, 15*time.Second, time.Second)
+	}
+	if err == nil {
+		err = exec.CommandContext(r.Context(), "systemctl", "is-active", "--quiet", "olcrtc-wb-session.service").Run()
+	}
+	if err != nil {
+		statusOutput, _ := exec.CommandContext(r.Context(), "systemctl", "--no-pager", "--full", "status", "olcrtc-wb-session.service").CombinedOutput()
+		s.logger.Error("wb session failed to start", "error", err, "output", redact.Text(truncate(string(output)+"\n"+string(statusOutput), 8000)))
+		audit(s, r, "wb.session_start", "wb", "session", "failed", "service or noVNC did not become ready")
+		writeError(w, r, http.StatusBadGateway, "wb_session_start_failed", "WB browser session не запустилась. Проверьте journalctl для olcrtc-wb-session.service")
+		return
+	}
 	_ = s.store.SetSetting(r.Context(), "wb_session_expires", expires.Format(time.RFC3339), false)
 	_ = s.store.SetSetting(r.Context(), "wb_session_extended", "false", false)
-	if runtime.GOOS == "linux" {
-		_ = exec.CommandContext(r.Context(), "systemctl", "start", "olcrtc-wb-session.service").Run()
-	}
 	audit(s, r, "wb.session_start", "wb", "session", "success", "")
-	writeJSON(w, http.StatusCreated, map[string]any{"active": true, "expires_at": expires, "novnc_url": "/wb/novnc/"})
+	writeJSON(w, http.StatusCreated, map[string]any{"active": true, "expires_at": expires, "novnc_url": wbNoVNCURL})
 }
 
 func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
@@ -235,6 +252,16 @@ func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
 	active := false
 	if t, err := time.Parse(time.RFC3339, expires); err == nil {
 		active = time.Now().Before(t)
+	}
+	if active && runtime.GOOS == "linux" {
+		active = exec.CommandContext(r.Context(), "systemctl", "is-active", "--quiet", "olcrtc-wb-session.service").Run() == nil
+		if active {
+			connection, err := net.DialTimeout("tcp", wbNoVNCAddress, 250*time.Millisecond)
+			active = err == nil
+			if connection != nil {
+				_ = connection.Close()
+			}
+		}
 	}
 	statePayload := map[string]any{}
 	if b, err := os.ReadFile("/var/lib/olcrtc-wb/state.json"); err == nil {
@@ -251,7 +278,7 @@ func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"active": active, "expires_at": expires, "extended": extended == "true", "novnc_url": "/wb/novnc/", "state": statePayload})
+	writeJSON(w, http.StatusOK, map[string]any{"active": active, "expires_at": expires, "extended": extended == "true", "novnc_url": wbNoVNCURL, "state": statePayload})
 }
 
 func (s *Server) handleWBSessionExtend(w http.ResponseWriter, r *http.Request) {
@@ -462,6 +489,54 @@ func (s *Server) writeWBJob(ctx context.Context, expires time.Time) error {
 	}
 	control, _ := json.Marshal(map[string]int64{"deadline_unix": expires.Unix()})
 	return writePrivateFile("/var/lib/olcrtc-wb/control.json", control)
+}
+
+func wbRuntimeReady() bool {
+	for _, path := range []string{
+		"/opt/olcrtc-panel/wb/node/bin/node",
+		"/opt/olcrtc-panel/wb/node_modules/playwright",
+		"/usr/lib/olcrtc-panel/wb/run-session.sh",
+		"/usr/lib/olcrtc-panel/wb/worker.mjs",
+	} {
+		if !fileExists(path) {
+			return false
+		}
+	}
+	browsers, _ := filepath.Glob("/opt/olcrtc-panel/wb/browsers/chromium-*/chrome-linux*/chrome")
+	return len(browsers) > 0
+}
+
+func waitForTCPStable(ctx context.Context, address string, timeout, stableFor time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	readySince := time.Time{}
+	dialer := net.Dialer{Timeout: 250 * time.Millisecond}
+	var lastErr error
+	for {
+		connection, err := dialer.DialContext(ctx, "tcp", address)
+		if err == nil {
+			_ = connection.Close()
+			if readySince.IsZero() {
+				readySince = time.Now()
+			}
+			if time.Since(readySince) >= stableFor {
+				return nil
+			}
+		} else {
+			lastErr = err
+			readySince = time.Time{}
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return lastErr
+			}
+			return errors.New("TCP endpoint did not remain ready")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func writePrivateFile(path string, data []byte) error {

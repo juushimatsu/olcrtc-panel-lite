@@ -6,12 +6,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/config"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/instance"
@@ -182,5 +184,28 @@ func TestJWTExpiration(t *testing.T) {
 	expires, ok := jwtExpiration("x." + payload + ".y")
 	if !ok || expires.Unix() != 2000000000 {
 		t.Fatalf("expires=%v ok=%v", expires, ok)
+	}
+}
+
+func TestWaitForTCPStable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := waitForTCPStable(context.Background(), listener.Addr().String(), time.Second, 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWaitForTCPStableTimesOut(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	listener.Close()
+	if err := waitForTCPStable(context.Background(), address, 100*time.Millisecond, 50*time.Millisecond); err == nil {
+		t.Fatal("expected readiness timeout")
 	}
 }

@@ -2,6 +2,8 @@
 Description=olcRTC instance %i
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -11,6 +13,7 @@ UMask=0027
 WorkingDirectory=/var/lib/olcrtc/%i
 ExecStart=/usr/local/bin/olcrtc /etc/olcrtc-panel/instances/%i/config.yaml
 Restart=on-failure
+RestartPreventExitStatus=203
 RestartSec=5
 TimeoutStopSec=20
 IPAccounting=yes

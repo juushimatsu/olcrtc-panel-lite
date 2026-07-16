@@ -26,7 +26,7 @@ ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
-ReadWritePaths=/etc/olcrtc-panel /var/lib/olcrtc-panel /var/lib/olcrtc /var/lib/olcrtc-wb /run/olcrtc-wb /etc/systemd/system
+ReadWritePaths=/etc/olcrtc-panel /var/lib/olcrtc-panel /var/lib/olcrtc /var/lib/olcrtc-wb /etc/systemd/system
 StandardOutput=journal
 StandardError=journal
 
