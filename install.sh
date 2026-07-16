@@ -9,6 +9,11 @@ MODE=install
 VERSION=""
 CONFIGURE_FIREWALL=false
 
+[[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+    echo "Invalid GitHub repository: $REPOSITORY" >&2
+    exit 2
+}
+
 usage() {
     cat <<'EOF'
 Usage: install.sh [--install|--update|--status|--reset-credentials|--regenerate-cert|--uninstall]
@@ -32,6 +37,10 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+if [ -n "$VERSION" ]; then
+    [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid release version: $VERSION" >&2; exit 2; }
+fi
 
 [ "$(id -u)" -eq 0 ] || { echo "Run installer as root" >&2; exit 1; }
 
@@ -86,13 +95,38 @@ apt-get install -y --no-install-recommends ca-certificates curl jq
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+
+RELEASES_API="https://api.github.com/repos/$REPOSITORY/releases"
 if [ -n "$VERSION" ]; then
-    BASE="https://github.com/$REPOSITORY/releases/download/$VERSION"
+    RELEASE_API="$RELEASES_API/tags/$VERSION"
 else
-    BASE="https://github.com/$REPOSITORY/releases/latest/download"
+    RELEASE_API="$RELEASES_API/latest"
 fi
+
+if ! curl -fsSL --retry 3 --connect-timeout 15 \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'X-GitHub-Api-Version: 2022-11-28' \
+    "$RELEASE_API" -o "$WORK/release.json"; then
+    if [ -n "$VERSION" ]; then
+        echo "GitHub Release '$VERSION' was not found in $REPOSITORY." >&2
+    else
+        echo "No published GitHub Release was found in $REPOSITORY." >&2
+    fi
+    echo "The installer requires a release bundle. Run the 'daily upstream bundle' workflow:" >&2
+    echo "https://github.com/$REPOSITORY/actions/workflows/daily-upstream.yml" >&2
+    exit 1
+fi
+
+RELEASE_TAG=$(jq -r '.tag_name // empty' "$WORK/release.json")
+[ -n "$RELEASE_TAG" ] || { echo "GitHub returned a release without tag_name" >&2; exit 1; }
+
 for file in manifest.json SHA256SUMS "olcrtc-panel-linux-$ARCH" "olcrtc-linux-$ARCH"; do
-    curl -fL --retry 3 --connect-timeout 15 "$BASE/$file" -o "$WORK/$file"
+    ASSET_URL=$(jq -r --arg name "$file" '[.assets[]? | select(.name == $name) | .browser_download_url][0] // empty' "$WORK/release.json")
+    [ -n "$ASSET_URL" ] || {
+        echo "GitHub Release '$RELEASE_TAG' is incomplete: missing asset '$file'." >&2
+        exit 1
+    }
+    curl -fL --retry 3 --connect-timeout 15 "$ASSET_URL" -o "$WORK/$file"
 done
 (cd "$WORK"; grep "  olcrtc-panel-linux-$ARCH$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-linux-$ARCH$" SHA256SUMS | sha256sum -c -)
 BUNDLE=$(jq -r '.bundle_id // empty' "$WORK/manifest.json")

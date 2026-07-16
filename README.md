@@ -26,6 +26,8 @@
 curl -fsSL https://raw.githubusercontent.com/juushimatsu/olcrtc-panel-lite/master/install.sh | sudo bash
 ```
 
+Одних исходников в ветке `master` недостаточно: установщик загружает проверенные бинарники из последнего GitHub Release. Workflow `daily upstream bundle` запускается при push в `master`; его также можно запустить вручную на вкладке GitHub Actions.
+
 Для другого owner/repository:
 
 ```bash
