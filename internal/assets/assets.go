@@ -3,6 +3,7 @@ package assets
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -85,6 +86,63 @@ func Install(root string) error {
 		if err := atomicWrite(resolved, data, destination.mode); err != nil {
 			return fmt.Errorf("install asset %s: %w", target, err)
 		}
+	}
+	if err := repairExistingWBRuntime(root); err != nil {
+		return err
+	}
+	return nil
+}
+
+func repairExistingWBRuntime(root string) error {
+	runtimeDir := filepath.Join(root, filepath.FromSlash("opt/olcrtc-panel/wb"))
+	resolved, err := filepath.Abs(runtimeDir)
+	if err != nil || !pathWithinRoot(root, resolved) {
+		return fmt.Errorf("WB runtime escapes root: %s", runtimeDir)
+	}
+	info, err := os.Lstat(resolved)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect WB runtime %s: %w", runtimeDir, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WB runtime is not a real directory: %s", runtimeDir)
+	}
+	worker, err := fs.ReadFile(files, "files/wb/worker.mjs")
+	if err != nil {
+		return fmt.Errorf("read embedded WB worker: %w", err)
+	}
+	if err := atomicWrite(filepath.Join(resolved, "worker.mjs"), worker, 0o644); err != nil {
+		return fmt.Errorf("refresh WB runtime worker: %w", err)
+	}
+	if err := filepath.WalkDir(resolved, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		entryInfo, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		mode := entryInfo.Mode().Perm()
+		switch {
+		case entry.IsDir():
+			mode |= 0o555
+		case entryInfo.Mode().IsRegular():
+			mode |= 0o444
+			if entryInfo.Mode().Perm()&0o111 != 0 {
+				mode |= 0o111
+			}
+		default:
+			return nil
+		}
+		mode &^= 0o022
+		return os.Chmod(path, mode)
+	}); err != nil {
+		return fmt.Errorf("repair WB runtime permissions: %w", err)
 	}
 	return nil
 }

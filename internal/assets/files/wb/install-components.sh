@@ -34,6 +34,7 @@ apt-get install -y --no-install-recommends "${packages[@]}"
 id olcrtc-wb >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/olcrtc-wb --shell /usr/sbin/nologin olcrtc-wb
 install -d -m 0755 -o root -g root "$INSTALL_DIR"
 install -d -m 0700 -o olcrtc-wb -g olcrtc-wb /var/lib/olcrtc-wb /var/lib/olcrtc-wb/profile
+install -m 0644 -o root -g root /usr/lib/olcrtc-panel/wb/worker.mjs "$INSTALL_DIR/worker.mjs"
 
 write_state node "Установка pinned Node.js" 35
 cd "$DOWNLOAD_DIR"

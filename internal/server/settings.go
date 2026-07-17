@@ -495,7 +495,9 @@ func (s *Server) writeWBJob(ctx context.Context, expires time.Time) error {
 func wbRuntimeReady() bool {
 	for _, path := range []string{
 		"/opt/olcrtc-panel/wb/node/bin/node",
-		"/opt/olcrtc-panel/wb/node_modules/playwright",
+		"/opt/olcrtc-panel/wb/node_modules/playwright/package.json",
+		"/opt/olcrtc-panel/wb/node_modules/playwright-core/package.json",
+		"/opt/olcrtc-panel/wb/worker.mjs",
 		"/usr/lib/olcrtc-panel/wb/run-session.sh",
 		"/usr/lib/olcrtc-panel/wb/worker.mjs",
 	} {

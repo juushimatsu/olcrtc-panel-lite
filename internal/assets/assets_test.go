@@ -142,3 +142,20 @@ func TestLiveKitAndWBUnitsHaveRequiredRuntimeAccess(t *testing.T) {
 		t.Fatal("WB runtime tree is not made readable and traversable for olcrtc-wb")
 	}
 }
+
+func TestWBWorkerRunsBesideInstalledPlaywright(t *testing.T) {
+	installer, err := fs.ReadFile(files, "files/wb/install-components.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(installer), `"$INSTALL_DIR/worker.mjs"`) {
+		t.Fatal("WB installer does not copy the worker beside node_modules")
+	}
+	runner, err := fs.ReadFile(files, "files/wb/run-session.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(runner), "/opt/olcrtc-panel/wb/worker.mjs") {
+		t.Fatal("WB runner does not execute the runtime worker beside Playwright")
+	}
+}
