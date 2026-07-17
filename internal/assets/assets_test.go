@@ -116,3 +116,29 @@ func TestInstanceUnitSelfHealsPermissionsAndOperationsExposeState(t *testing.T) 
 		t.Fatal("WB installer does not publish package progress")
 	}
 }
+
+func TestLiveKitAndWBUnitsHaveRequiredRuntimeAccess(t *testing.T) {
+	instanceUnit, err := fs.ReadFile(files, "files/systemd/olcrtc-instance@.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(instanceUnit), "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK") {
+		t.Fatal("instance unit blocks AF_NETLINK required for LiveKit ICE interface discovery")
+	}
+
+	wbUnit, err := fs.ReadFile(files, "files/systemd/olcrtc-wb-session.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wbUnit), "ExecStart=/bin/bash /usr/lib/olcrtc-panel/wb/run-session.sh") {
+		t.Fatal("WB session does not invoke its runner through bash")
+	}
+
+	wbInstaller, err := fs.ReadFile(files, "files/wb/install-components.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wbInstaller), "chmod -R a+rX,go-w \"$INSTALL_DIR\"") {
+		t.Fatal("WB runtime tree is not made readable and traversable for olcrtc-wb")
+	}
+}

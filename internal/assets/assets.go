@@ -13,6 +13,19 @@ import (
 //go:embed files/**
 var files embed.FS
 
+var directories = []struct {
+	path string
+	mode os.FileMode
+}{
+	{"etc", 0o755},
+	{"etc/systemd", 0o755},
+	{"etc/systemd/system", 0o755},
+	{"usr", 0o755},
+	{"usr/lib", 0o755},
+	{"usr/lib/olcrtc-panel", 0o755},
+	{"usr/lib/olcrtc-panel/wb", 0o755},
+}
+
 var destinations = map[string]struct {
 	path string
 	mode os.FileMode
@@ -35,6 +48,26 @@ func Install(root string) error {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return err
+	}
+	for _, directory := range directories {
+		target := filepath.Join(root, filepath.FromSlash(directory.path))
+		resolved, err := filepath.Abs(target)
+		if err != nil || !pathWithinRoot(root, resolved) {
+			return fmt.Errorf("asset directory escapes root: %s", target)
+		}
+		if err := os.MkdirAll(resolved, directory.mode); err != nil {
+			return fmt.Errorf("create asset directory %s: %w", target, err)
+		}
+		info, err := os.Lstat(resolved)
+		if err != nil {
+			return fmt.Errorf("inspect asset directory %s: %w", target, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("asset directory is not a real directory: %s", target)
+		}
+		if err := os.Chmod(resolved, directory.mode); err != nil {
+			return fmt.Errorf("set asset directory mode %s: %w", target, err)
+		}
 	}
 	for source, destination := range destinations {
 		data, err := fs.ReadFile(files, source)

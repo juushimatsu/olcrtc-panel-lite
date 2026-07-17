@@ -162,6 +162,12 @@ func (m *Manager) action(ctx context.Context, action string, id int64) error {
 	if err != nil {
 		return err
 	}
+	if action == "start" || action == "restart" {
+		out, err := exec.CommandContext(ctx, "systemctl", "reset-failed", name).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("systemctl reset-failed: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+	}
 	out, err := exec.CommandContext(ctx, "systemctl", action, name).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("systemctl %s: %s: %w", action, strings.TrimSpace(string(out)), err)

@@ -52,6 +52,6 @@ PATH="$INSTALL_DIR/node/bin:$PATH" PLAYWRIGHT_BROWSERS_PATH="$INSTALL_DIR/browse
 dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | sort -u > "$PACKAGES_AFTER"
 comm -13 "$PACKAGES_BEFORE" "$PACKAGES_AFTER" > "$PACKAGE_MANIFEST"
 chown -R root:root "$INSTALL_DIR"
-chmod -R go-w "$INSTALL_DIR"
+chmod -R a+rX,go-w "$INSTALL_DIR"
 systemctl daemon-reload
 write_state completed "Компоненты автоматизации установлены" 100

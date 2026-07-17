@@ -226,6 +226,7 @@ func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = os.Remove("/var/lib/olcrtc-wb/state.json")
+	_ = exec.CommandContext(r.Context(), "systemctl", "reset-failed", "olcrtc-wb-session.service").Run()
 	output, err := exec.CommandContext(r.Context(), "systemctl", "restart", "olcrtc-wb-session.service").CombinedOutput()
 	if err == nil {
 		err = waitForTCPStable(r.Context(), wbNoVNCAddress, 15*time.Second, time.Second)
