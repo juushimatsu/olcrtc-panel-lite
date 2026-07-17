@@ -11,6 +11,7 @@ User=olcrtc
 Group=olcrtc
 UMask=0027
 WorkingDirectory=/var/lib/olcrtc/%i
+ExecStartPre=+/usr/local/bin/olcrtc-panel instance prepare --config /etc/olcrtc-panel/config.yaml --id %i
 ExecStart=/usr/local/bin/olcrtc /etc/olcrtc-panel/instances/%i/config.yaml
 Restart=on-failure
 RestartPreventExitStatus=203
@@ -31,8 +32,7 @@ ProtectKernelLogs=true
 ProtectControlGroups=true
 RestrictRealtime=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-ReadOnlyPaths=/etc/olcrtc-panel/instances/%i
-ReadWritePaths=/var/lib/olcrtc/%i
+ReadWritePaths=/etc/olcrtc-panel /var/lib/olcrtc-panel /var/lib/olcrtc/%i
 StandardOutput=journal
 StandardError=journal
 

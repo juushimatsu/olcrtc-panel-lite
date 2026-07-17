@@ -94,3 +94,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$bundle" dist/* --repo "$GITHUB_REPOSITORY" --title "$bundle" --notes "Panel commit $GITHUB_SHA with official olcRTC master ${{ steps.upstream.outputs.sha }}" --latest
+      - name: Keep only the newest ten bundle releases
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mapfile -t stale_releases < <(
+            gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --exclude-drafts --exclude-pre-releases --json tagName,createdAt \
+              --jq 'map(select(.tagName | startswith("bundle-"))) | sort_by(.createdAt) | reverse | .[10:] | .[].tagName'
+          )
+          for tag in "${stale_releases[@]}"; do
+            [ -n "$tag" ] || continue
+            echo "Deleting old bundle release: $tag"
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          done

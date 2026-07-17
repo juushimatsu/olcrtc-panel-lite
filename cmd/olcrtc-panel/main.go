@@ -50,6 +50,8 @@ func run(args []string) error {
 	switch command {
 	case "serve":
 		return serve(args)
+	case "instance":
+		return instanceCommand(args)
 	case "credentials":
 		return credentials(args)
 	case "certificate":
@@ -88,6 +90,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	config.ApplyInstalledRelease(&cfg)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	st, secrets, err := openState(cfg)
 	if err != nil {

@@ -8,8 +8,8 @@
 - `/system/status`, `/system/metrics`, `/system/certificate`, `/system/logs`, `/system/backup`;
 - `/instances` и `/instances/<id>/{start,stop,restart,duplicate,rotate-key,change-room,reset-traffic,diagnostics,uri,qr,logs}`;
 - `/subscriptions`, entries, reorder, QR и mirror sync;
-- `/wb/components`, `/wb/session`, `/wb/token/refresh`;
-- `/updates/check`, `/updates/install`, `/updates/progress`, `/updates/rollback`;
+- `/wb/components`, `/wb/components/progress`, `/wb/session`, `/wb/token/refresh`;
+- `/updates/check`, `/updates/releases`, `/updates/install`, `/updates/progress`, `/updates/rollback`;
 - `/settings`.
 
 Ошибка имеет стабильную форму:
@@ -31,3 +31,5 @@ GET /sub/<slug>
 GET /sub/<slug>/exclave
 GET /ca.crt
 ```
+
+`/wb/components/progress` и `/updates/progress` возвращают состояние операции, текущую фазу, сообщение и процент выполнения. `/updates/releases` перечисляет до десяти доступных GitHub bundle-релизов и отмечает `latest` и текущий установленный bundle.

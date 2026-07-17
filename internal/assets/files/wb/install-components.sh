@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 STATE_FILE=/run/olcrtc-wb-components-state.json
 INSTALL_DIR=/opt/olcrtc-panel/wb
@@ -26,7 +27,9 @@ write_state preparing "Подготовка установки" 5
 packages=(xvfb x11vnc novnc websockify openbox ca-certificates curl xz-utils)
 dpkg-query -W -f='${binary:Package}\n' 2>/dev/null | sort -u > "$PACKAGES_BEFORE"
 export DEBIAN_FRONTEND=noninteractive
+write_state repositories "Обновление списка системных пакетов" 10
 apt-get update
+write_state packages "Установка системных компонентов" 20
 apt-get install -y --no-install-recommends "${packages[@]}"
 id olcrtc-wb >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/olcrtc-wb --shell /usr/sbin/nologin olcrtc-wb
 install -d -m 0755 -o root -g root "$INSTALL_DIR"

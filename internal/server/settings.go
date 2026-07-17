@@ -175,7 +175,7 @@ func (s *Server) handleWBRemove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWBProgress(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.operations.get("wb"))
+	writeJSON(w, http.StatusOK, operationProgressFrom(s.operations.get("wb"), wbComponentsStatePath))
 }
 
 func (s *Server) handleWBSettingsGet(w http.ResponseWriter, r *http.Request) {
@@ -365,8 +365,8 @@ func (s *Server) handleUpdatesCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"configured": true, "current_version": s.cfg.PanelVersion, "current_upstream_sha": s.cfg.UpstreamSHA, "manifest": manifest})
 }
 
-func (s *Server) handleUpdatesReleases(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"current": map[string]string{"panel_version": s.cfg.PanelVersion, "upstream_sha": s.cfg.UpstreamSHA}, "rollback_available": fileExists("/var/lib/olcrtc-panel/releases/previous")})
+func (s *Server) handleUpdatesReleases(w http.ResponseWriter, r *http.Request) {
+	s.writeUpdatesReleases(w, r)
 }
 
 func (s *Server) handleUpdatesInstall(w http.ResponseWriter, r *http.Request) {
@@ -386,7 +386,7 @@ func (s *Server) handleUpdatesInstall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdatesProgress(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.operations.get("update"))
+	writeJSON(w, http.StatusOK, operationProgressFrom(s.operations.get("update"), panelUpdateStatePath))
 }
 
 func (s *Server) handleUpdatesRollback(w http.ResponseWriter, r *http.Request) {

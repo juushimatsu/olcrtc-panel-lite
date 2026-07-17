@@ -52,6 +52,16 @@ systemctl status olcrtc-instance@1
 journalctl -u olcrtc-instance@1 -n 200 --no-pager
 ```
 
+Перед каждым запуском `olcrtc-instance@<id>.service` выполняет root-only `ExecStartPre`, который восстанавливает безопасные owner/mode для текущего `olcrtc` binary, instance YAML/key и runtime directory. Ручная эквивалентная проверка:
+
+```bash
+sudo olcrtc-panel instance prepare --config /etc/olcrtc-panel/config.yaml --id 1
+```
+
+## Релизы и обновления
+
+Страница `Настройки → Обновления` показывает последние десять опубликованных bundle-релизов. Из неё можно обновиться до последнего bundle, установить одну из прошлых версий или выполнить rollback на предыдущий локальный bundle. Workflow после успешной публикации автоматически удаляет более старые bundle-релизы и соответствующие tags.
+
 Exact traffic появляется после закрытия tunnel stream. Dashboard network speed, если добавлена в будущем через IPAccounting delta, не должна смешиваться с exact payload total.
 
 ## Восстановление

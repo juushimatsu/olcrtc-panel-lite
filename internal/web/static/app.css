@@ -166,6 +166,18 @@ code, .mono { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospac
 .expanded-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .progress { height: 7px; border-radius: 10px; background: var(--line); overflow: hidden; }
 .progress > span { height: 100%; display: block; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+.operation-card { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); }
+.operation-card.failed { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); }
+.operation-card.completed { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.operation-card p { margin: 9px 0 0; color: var(--muted); }
+.operation-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+.operation-progress { height: 9px; }
+.operation-output { margin-top: 12px; }
+.operation-output summary { cursor: pointer; color: var(--muted); }
+.release-catalog { margin-top: 18px; }
+.release-catalog h3 { margin: 0 0 10px; font-size: 14px; }
+.release-table { min-width: 720px; }
+.empty-state.compact { min-height: 0; margin-top: 14px; padding: 20px; }
 .traffic-cell { min-width: 145px; }
 .traffic-value { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; font-size: 11px; }
 

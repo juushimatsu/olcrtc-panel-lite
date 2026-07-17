@@ -92,3 +92,27 @@ func TestInstanceRuntimeAssetsPreserveExecutableAccessAndBoundRestarts(t *testin
 		}
 	}
 }
+
+func TestInstanceUnitSelfHealsPermissionsAndOperationsExposeState(t *testing.T) {
+	unit, err := fs.ReadFile(files, "files/systemd/olcrtc-instance@.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(unit), "ExecStartPre=+/usr/local/bin/olcrtc-panel instance prepare") {
+		t.Fatal("instance unit does not prepare permissions before start")
+	}
+	updater, err := fs.ReadFile(files, "files/update/update.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(updater), "STATE_FILE=/run/olcrtc-panel-update-state.json") || !strings.Contains(string(updater), "write_state completed") {
+		t.Fatal("update script does not publish progress")
+	}
+	wbInstaller, err := fs.ReadFile(files, "files/wb/install-components.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wbInstaller), "write_state packages") {
+		t.Fatal("WB installer does not publish package progress")
+	}
+}

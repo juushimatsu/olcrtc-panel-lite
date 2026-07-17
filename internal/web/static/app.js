@@ -9,6 +9,10 @@ const state = {
   instances: [],
   subscriptions: [],
   settings: null,
+  releases: null,
+  wbOperation: { state: 'idle', percent: 0 },
+  updateOperation: { state: 'idle', percent: 0 },
+  settingsPolling: false,
   expandedInstance: null,
   expandedSubscription: null,
   instanceFilters: { search: '', provider: '', transport: '', status: '', quota: '' },
@@ -304,21 +308,36 @@ function openEntryForm(slug) {
 }
 
 async function loadSettings() {
-  state.settings = await api('/api/v1/settings');
+  const [settings, wbOperation, updateOperation] = await Promise.all([
+    api('/api/v1/settings'),
+    api('/api/v1/wb/components/progress').catch(() => ({ state: 'idle', percent: 0 })),
+    api('/api/v1/updates/progress').catch(() => ({ state: 'idle', percent: 0 })),
+  ]);
+  state.settings = settings;
+  state.releases = { configured: settings.updates.configured, items: [], loading: true };
+  state.wbOperation = wbOperation;
+  state.updateOperation = updateOperation;
   applyTheme(state.settings.interface?.theme || localStorage.getItem('olcrtc-theme') || 'dark');
   renderSettings();
+  state.poller = setInterval(refreshSettingsOperations, 1500);
+  api('/api/v1/updates/releases').then(releases=>{if(state.page==='settings'){state.releases=releases;renderSettings();}}).catch(error=>{if(state.page==='settings'){state.releases={configured:settings.updates.configured,items:[],error:error.message};renderSettings();}});
 }
 
 function renderSettings() {
   const s = state.settings;
+  const releases = state.releases || { configured: false, items: [] };
+  const currentRelease = releases.current || { panel_version: s.updates.panel_version, upstream_sha: s.updates.upstream_sha };
+  const latestRelease = releases.items?.[0];
+  const updateRunning = state.updateOperation?.state === 'running';
+  const wbRunning = state.wbOperation?.state === 'running';
   document.querySelector('#page-content').innerHTML = `
     <section class="page"><div class="page-header"><div class="page-title"><h1>Настройки</h1><p>Безопасность, HTTPS, интеграции и обслуживание</p></div></div><div class="settings-layout">
       <nav class="panel settings-nav"><button data-action="scroll-setting" data-target="security">Безопасность</button><button data-action="scroll-setting" data-target="https">HTTPS и IP</button><button data-action="scroll-setting" data-target="updates">Обновления</button><button data-action="scroll-setting" data-target="wb">WB Stream</button><button data-action="scroll-setting" data-target="yandex">Yandex mirror</button><button data-action="scroll-setting" data-target="instances-settings">Инстансы</button><button data-action="scroll-setting" data-target="interface">Интерфейс</button><button data-action="scroll-setting" data-target="backup">Backup</button></nav>
       <div>
         ${settingsSection('security','Безопасность',`<form data-form="credentials" class="form-grid">${field('username','Новый логин',state.user || '')}${field('current_password','Текущий пароль','','password','Обязательно',true)}${field('new_password','Новый пароль','','password','Пусто = оставить текущий')}<div class="wide form-actions"><button class="btn" type="button" data-action="revoke-sessions">Завершить все сессии</button><button class="btn btn-primary" type="submit">Изменить credentials</button></div></form>`)}
         ${settingsSection('https','HTTPS и IP',`<form data-form="https-settings"><div class="form-grid">${field('public_ip','Публичный IP',s.https.public_ip || '')}${field('public_port','HTTPS порт',s.https.port,'number')}</div><div class="form-actions"><a class="btn" href="/ca.crt" download>Скачать CA</a><button class="btn" type="button" data-action="regenerate-cert">Регенерировать leaf</button><button class="btn btn-primary" type="submit">Сохранить IP / порт</button></div></form><p class="field-label">CA fingerprint</p><div class="fingerprint mono">${esc(s.https.ca_fingerprint || '')}</div><p class="field-label">Server fingerprint</p><div class="fingerprint mono">${esc(s.https.server_fingerprint || '')}</div><div class="notice" style="margin-top:14px">После смены порта перезапустите panel service. CA необходимо сверить с fingerprint из консоли VPS.</div>`)}
-        ${settingsSection('updates','Обновления',`<div class="detail-list">${detail('Версия панели',s.updates.panel_version)}${detail('Upstream SHA',shortSHA(s.updates.upstream_sha))}${detail('Release manifest',s.updates.configured ? 'Настроен' : 'Не задан')}</div><div class="form-actions"><button class="btn" data-action="check-updates">Проверить</button><button class="btn btn-primary" data-action="install-update">Установить bundle</button><button class="btn" data-action="rollback-update">Rollback</button></div><div id="update-result"></div>`)}
-        ${settingsSection('wb','WB Stream automation',`<div class="detail-list">${detail('Платформа',s.wb.supported ? 'linux/amd64' : 'Не поддерживается')}${detail('Components',s.wb.installed ? 'Установлены' : 'Не установлены')}</div><div class="notice info" style="margin-top:14px">Chromium запускается от olcrtc-wb. Login и CAPTCHA выполняются вручную через авторизованный noVNC route.</div><div class="form-actions"><button class="btn btn-primary" data-action="wb-install" ${!s.wb.supported ? 'disabled' : ''}>Установить components</button><button class="btn btn-danger" data-action="wb-remove" ${!s.wb.supported ? 'disabled' : ''}>Удалить components</button><button class="btn" data-action="wb-session">Открыть 15-минутную сессию</button><button class="btn" data-action="wb-token">Обновить token</button></div>`)}
+        ${settingsSection('updates','Обновления',`<div class="detail-list">${detail('Текущий bundle',currentRelease.bundle_id || 'не определён')}${detail('Версия панели',currentRelease.panel_version || s.updates.panel_version)}${detail('Upstream SHA',shortSHA(currentRelease.upstream_sha || s.updates.upstream_sha))}${detail('Release manifest',s.updates.configured ? 'Настроен' : 'Не задан')}</div><div class="form-actions"><button class="btn" data-action="check-updates" ${updateRunning ? 'disabled' : ''}>Обновить список</button><button class="btn btn-primary" data-action="install-update" ${updateRunning || !latestRelease || latestRelease.current ? 'disabled' : ''}>Обновить до последнего</button><button class="btn" data-action="rollback-update" ${updateRunning || !releases.rollback_available ? 'disabled' : ''}>Rollback</button></div><div id="update-operation">${operationProgressHTML(state.updateOperation, 'Обновление')}</div><div id="release-list">${releaseCatalogHTML(releases, updateRunning)}</div>`)}
+        ${settingsSection('wb','WB Stream automation',`<div class="detail-list">${detail('Платформа',s.wb.supported ? 'linux/amd64' : 'Не поддерживается')}${detail('Components',s.wb.installed ? 'Установлены' : 'Не установлены')}</div><div class="notice info" style="margin-top:14px">Chromium запускается от olcrtc-wb. Login и CAPTCHA выполняются вручную через авторизованный noVNC route.</div><div class="form-actions"><button class="btn btn-primary" data-action="wb-install" ${!s.wb.supported || wbRunning ? 'disabled' : ''}>Установить components</button><button class="btn btn-danger" data-action="wb-remove" ${!s.wb.supported || wbRunning ? 'disabled' : ''}>Удалить components</button><button class="btn" data-action="wb-session">Открыть 15-минутную сессию</button><button class="btn" data-action="wb-token">Обновить token</button></div><div id="wb-operation">${operationProgressHTML(state.wbOperation, 'WB components')}</div>`)}
         ${settingsSection('yandex','Yandex encrypted mirror',`<form data-form="yandex"><div class="form-grid"><label class="checkbox"><input type="checkbox" name="yandex_enabled" ${s.yandex.enabled ? 'checked' : ''}> Включить глобально</label>${field('yandex_base_path','Base path',s.yandex.base_path || '/olcrtc/subscriptions')}${field('yandex_oauth_token','OAuth token','','password',s.yandex.token_set ? 'Token сохранён; пусто = не менять' : 'Введите token')}<label class="checkbox"><input type="checkbox" name="clear_yandex_token"> Удалить сохранённый token</label></div><div class="form-actions"><button class="btn btn-primary" type="submit">Сохранить Yandex settings</button></div></form>`)}
         ${settingsSection('instances-settings','Инстансы',`<form data-form="instance-settings" class="inline-form"><div class="field"><label>Максимум инстансов</label><input class="input" name="max_instances" type="number" min="1" max="1000" value="${s.instances.maximum}"></div><button class="btn btn-primary" type="submit">Сохранить</button></form>`)}
         ${settingsSection('interface','Интерфейс',`<form data-form="theme" class="inline-form"><div class="field"><label>Тема</label><select class="select" name="theme"><option value="dark" ${s.interface.theme==='dark'?'selected':''}>Тёмная</option><option value="light" ${s.interface.theme==='light'?'selected':''}>Светлая</option></select></div><button class="btn btn-primary" type="submit">Применить</button></form>`)}
@@ -385,10 +404,10 @@ app.addEventListener('click', async event => {
     if (action === 'revoke-sessions') { if(confirm('Завершить все активные сессии, включая текущую?')){await api('/api/v1/auth/sessions',{method:'DELETE'});state.user=null;renderLogin('Все сессии завершены.');} }
     if (action === 'create-backup') await createBackup();
     if (action === 'check-updates') await checkUpdates();
-    if (action === 'install-update') await installUpdate();
-    if (action === 'rollback-update') { if(confirm('Выполнить rollback на предыдущий bundle?')){await api('/api/v1/updates/rollback',{method:'POST'});toast('Rollback запущен');} }
-    if (action === 'wb-install') { await api('/api/v1/wb/components/install',{method:'POST'});toast('Установка WB components запущена'); }
-    if (action === 'wb-remove') { if(confirm('Удалить WB components и browser profile?')){await api('/api/v1/wb/components/remove',{method:'POST'});toast('Удаление WB components запущено');} }
+    if (action === 'install-update') await installUpdate(target.dataset.bundle || '');
+    if (action === 'rollback-update') { if(confirm('Выполнить rollback на предыдущий bundle?')){state.updateOperation=await api('/api/v1/updates/rollback',{method:'POST'});refreshSettingsOperationViews();toast('Rollback запущен');} }
+    if (action === 'wb-install') { state.wbOperation=await api('/api/v1/wb/components/install',{method:'POST'});refreshSettingsOperationViews();toast('Установка WB components запущена'); }
+    if (action === 'wb-remove') { if(confirm('Удалить WB components и browser profile?')){state.wbOperation=await api('/api/v1/wb/components/remove',{method:'POST'});refreshSettingsOperationViews();toast('Удаление WB components запущено');} }
     if (action === 'wb-session') { const result=await api('/api/v1/wb/session',{method:'POST'});openModal('WB browser session',`<div class="notice info">Сессия активна до ${formatDate(result.expires_at)}. Login и CAPTCHA выполняются вручную.</div><div class="form-actions"><a class="btn btn-primary" href="${attr(result.novnc_url)}" target="_blank" rel="noopener">Открыть noVNC</a></div>`); }
     if (action === 'wb-token') openWBTokenModal();
     if (action === 'wb-fill-instance') await fillWBInstanceForm();
@@ -463,8 +482,9 @@ function showSubscriptionQR(slug,format){const src=`/api/v1/subscriptions/${enco
 
 async function regenerateCertificate(){const ip=prompt('Публичный IP для SAN',state.settings?.https?.public_ip || '');if(!ip)return;const result=await api('/api/v1/system/certificate/regenerate',{method:'POST',body:JSON.stringify({public_ip:ip})});openModal('Сертификат создан',`<div class="notice">Перезапустите panel service, чтобы новый leaf certificate начал использоваться.</div><p class="field-label">Fingerprint</p><div class="fingerprint mono">${esc(result.server_fingerprint)}</div>`);}
 async function createBackup(){const result=await api('/api/v1/system/backup',{method:'POST'});toast('Backup создан');window.location.href=result.download_url;}
-async function checkUpdates(){const result=await api('/api/v1/updates/check');const target=document.querySelector('#update-result');const html=`<pre class="payload-box" style="margin-top:15px">${esc(JSON.stringify(result,null,2))}</pre>`;if(target)target.innerHTML=html;else openModal('Проверка обновлений',html);}
-async function installUpdate(){const id=prompt('Bundle ID из проверенного manifest');if(!id)return;await api('/api/v1/updates/install',{method:'POST',body:JSON.stringify({bundle_id:id})});toast('Установка bundle запущена');}
+async function checkUpdates(){state.releases=await api('/api/v1/updates/releases');if(state.page==='settings'&&state.settings){renderSettings();toast('Список релизов обновлён');}else{openModal('Доступные релизы',releaseCatalogHTML(state.releases,false),true);}}
+async function installUpdate(bundleID=''){const item=bundleID?(state.releases?.items||[]).find(release=>release.bundle_id===bundleID):(state.releases?.items||[]).find(release=>release.latest&&!release.current);const id=bundleID||item?.bundle_id;if(!id)throw new Error('Нет доступного release bundle');if(!confirm(`Установить release ${id}? Активные инстансы будут перезапущены.`))return;state.updateOperation=await api('/api/v1/updates/install',{method:'POST',body:JSON.stringify({bundle_id:id})});if(state.page!=='settings')closeModal();refreshSettingsOperationViews();toast(item?.latest?'Обновление запущено':'Установка выбранного релиза запущена',id);}
+
 function openWBTokenModal(){openModal('Обновить общий WB token',`<form data-form="wb-token"><div class="field"><label>Bearer token</label><textarea class="textarea mono" name="token" required></textarea><span class="field-hint">Token хранится зашифрованно, применяется ко всем WB-инстансам и не попадает в URI/QR.</span></div><div class="form-actions"><button class="btn" type="button" data-action="close-modal">Отмена</button><button class="btn btn-primary" type="submit">Сохранить и применить</button></div></form>`);}
 
 async function fillWBInstanceForm(){
@@ -510,3 +530,63 @@ function stopPolling(){if(state.poller){clearInterval(state.poller);state.poller
 async function copyText(value){if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(value);const area=document.createElement('textarea');area.value=value;document.body.append(area);area.select();document.execCommand('copy');area.remove();}
 async function downloadAuthenticated(url,filename){const response=await fetch(url,{credentials:'same-origin'});if(!response.ok)throw new Error('Не удалось скачать файл');const blob=await response.blob();const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);}
 function importSubscriptions(){const input=document.createElement('input');input.type='file';input.accept='application/json,.json';input.onchange=async()=>{try{const text=await input.files[0].text();const payload=JSON.parse(text);const result=await api('/api/v1/subscriptions/import',{method:'POST',body:JSON.stringify(payload)});await loadSubscriptions();toast('Импорт завершён',`Создано: ${result.created}`);}catch(error){toast('Ошибка импорта',error.message,'error');}};input.click();}
+
+async function refreshSettingsOperations(){
+  if(state.page!=='settings'||state.settingsPolling)return;
+  state.settingsPolling=true;
+  const previousWB=state.wbOperation?.state,previousUpdate=state.updateOperation?.state;
+  try{
+    const [wbOperation,updateOperation]=await Promise.all([
+      api('/api/v1/wb/components/progress').catch(()=>null),
+      api('/api/v1/updates/progress').catch(()=>null),
+    ]);
+    if(wbOperation)state.wbOperation=wbOperation;
+    if(updateOperation)state.updateOperation=updateOperation;
+    const wbFinished=previousWB==='running'&&state.wbOperation?.state!=='running';
+    const updateFinished=previousUpdate==='running'&&state.updateOperation?.state!=='running';
+    if(wbFinished||updateFinished){
+      const [settings,releases]=await Promise.all([
+        api('/api/v1/settings').catch(()=>null),
+        api('/api/v1/updates/releases').catch(()=>null),
+      ]);
+      if(settings)state.settings=settings;
+      if(releases)state.releases=releases;
+      renderSettings();
+    }else{
+      refreshSettingsOperationViews();
+    }
+  }finally{state.settingsPolling=false;}
+}
+
+function refreshSettingsOperationViews(){
+  const updateRunning=state.updateOperation?.state==='running';
+  const wbRunning=state.wbOperation?.state==='running';
+  const updateRoot=document.querySelector('#update-operation');if(updateRoot)updateRoot.innerHTML=operationProgressHTML(state.updateOperation,'Обновление');
+  const wbRoot=document.querySelector('#wb-operation');if(wbRoot)wbRoot.innerHTML=operationProgressHTML(state.wbOperation,'WB components');
+  const releasesRoot=document.querySelector('#release-list');if(releasesRoot)releasesRoot.innerHTML=releaseCatalogHTML(state.releases||{configured:false,items:[]},updateRunning);
+  const latest=state.releases?.items?.[0];
+  const checkButton=document.querySelector('[data-action="check-updates"]');if(checkButton)checkButton.disabled=updateRunning;
+  const updateButton=document.querySelector('[data-action="install-update"]:not([data-bundle])');if(updateButton)updateButton.disabled=updateRunning||!latest||latest.current;
+  const rollbackButton=document.querySelector('[data-action="rollback-update"]');if(rollbackButton)rollbackButton.disabled=updateRunning||!state.releases?.rollback_available;
+  document.querySelectorAll('[data-action="wb-install"],[data-action="wb-remove"]').forEach(button=>{button.disabled=wbRunning||!state.settings?.wb?.supported;});
+}
+
+function operationProgressHTML(operation={},title='Операция'){
+  const current=operation||{};
+  if(!current.state||current.state==='idle')return '<div class="operation-card muted">Нет активной операции</div>';
+  const value=clamp(current.percent,0,100);
+  const labels={running:'Выполняется',completed:'Завершено',failed:'Ошибка'};
+  const message=current.error||current.message||labels[current.state]||current.state;
+  const output=current.output?`<details class="operation-output"><summary>Технический вывод</summary><pre class="payload-box">${esc(current.output)}</pre></details>`:'';
+  return `<div class="operation-card ${attr(current.state)}"><div class="operation-heading"><strong>${esc(title)}: ${esc(labels[current.state]||current.state)}</strong><span>${Math.round(value)}%</span></div><div class="progress operation-progress"><span style="width:${value}%"></span></div><p>${esc(message)}</p>${output}</div>`;
+}
+
+function releaseCatalogHTML(catalog={},operationRunning=false){
+  if(catalog.loading)return '<div class="operation-card muted">Загрузка списка релизов...</div>';
+  if(catalog.error)return `<div class="notice" style="margin-top:14px">${esc(catalog.error)}</div>`;
+  if(!catalog.configured)return '<div class="notice" style="margin-top:14px">Источник GitHub Releases не настроен.</div>';
+  const items=catalog.items||[];
+  if(!items.length)return '<div class="empty-state compact"><p>Опубликованные bundle-релизы не найдены.</p></div>';
+  const rows=items.map(item=>`<tr><td><strong class="mono">${esc(item.bundle_id)}</strong>${item.latest?' <span class="chip green">latest</span>':''}${item.current?' <span class="chip blue">current</span>':''}</td><td>${item.published_at?formatDate(item.published_at):'—'}</td><td><a class="btn btn-ghost" href="${attr(item.url)}" target="_blank" rel="noopener">GitHub</a></td><td><button class="btn ${item.latest?'btn-primary':''}" data-action="install-update" data-bundle="${attr(item.bundle_id)}" ${operationRunning||item.current?'disabled':''}>${item.current?'Установлен':item.latest?'Обновить':'Установить эту версию'}</button></td></tr>`).join('');
+  return `<div class="release-catalog"><h3>Доступные релизы</h3><div class="table-wrap"><table class="table release-table"><thead><tr><th>Bundle</th><th>Дата</th><th>Страница</th><th>Действие</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
