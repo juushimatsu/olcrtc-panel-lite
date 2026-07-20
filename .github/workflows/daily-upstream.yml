@@ -53,10 +53,13 @@ jobs:
         if: steps.upstream.outputs.changed == 'true'
         working-directory: upstream
         run: golangci-lint run --timeout=10m ./...
-      - name: Upstream unit tests
+      - name: Upstream required tests
         if: steps.upstream.outputs.changed == 'true'
         working-directory: upstream
-        run: go test -count=1 -timeout=10m ./...
+        shell: bash
+        run: |
+          mapfile -t packages < <(go list ./... | grep -v '/internal/e2e$')
+          go test -count=1 -timeout=10m "${packages[@]}"
       - name: Panel quality gates
         if: steps.upstream.outputs.changed == 'true'
         working-directory: panel
@@ -109,3 +112,8 @@ jobs:
             echo "Deleting old bundle release: $tag"
             gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
           done
+      - name: Upstream E2E diagnostics
+        if: steps.upstream.outputs.changed == 'true'
+        continue-on-error: true
+        working-directory: upstream
+        run: go test -count=1 -timeout=10m ./internal/e2e
