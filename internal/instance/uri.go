@@ -243,6 +243,122 @@ func ValidateClientURI(raw string) error {
 	return nil
 }
 
+// URIFormat identifies the two compact URI conventions used by the panel.
+// It returns "client", "olcbox" or an empty string for an unknown shape.
+func URIFormat(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(strings.ToLower(raw), "olcrtc://") {
+		return ""
+	}
+	body := raw[len("olcrtc://"):]
+	question := strings.IndexByte(body, '?')
+	at := strings.IndexByte(body, '@')
+	if question > 0 && at > question {
+		return "olcbox"
+	}
+	if at > 0 && question > at && strings.HasPrefix(body[at+1:], "r/") {
+		return "client"
+	}
+	return ""
+}
+
+// ValidateStandardURI rejects manual entries which do not follow the
+// OLCBOX/standard URI convention from docs/uri.md.
+func ValidateStandardURI(raw string) error {
+	if len(raw) > 16*1024 {
+		return errors.New("OLCBOX URI exceeds 16 KiB")
+	}
+	raw = strings.TrimSpace(raw)
+	if URIFormat(raw) != "olcbox" || strings.ContainsAny(raw, "\r\n") {
+		return errors.New("manual URI must use the OLCBOX olcrtc:// format")
+	}
+	body := raw[len("olcrtc://"):]
+	question := strings.IndexByte(body, '?')
+	at := strings.IndexByte(body, '@')
+	if question <= 0 || at <= question {
+		return errors.New("OLCBOX URI must contain provider, transport and room")
+	}
+	provider := strings.TrimSpace(body[:question])
+	transportToken := strings.TrimSpace(body[question+1 : at])
+	if !providers[provider] {
+		return fmt.Errorf("unsupported URI provider %q", provider)
+	}
+	transport, err := validateStandardTransport(transportToken)
+	if err != nil {
+		return err
+	}
+	if !transports[transport] {
+		return fmt.Errorf("unsupported URI transport %q", transport)
+	}
+
+	rest := body[at+1:]
+	keyMarker := strings.IndexByte(rest, '#')
+	if keyMarker <= 0 {
+		return errors.New("OLCBOX URI must contain room and encryption key")
+	}
+	room := rest[:keyMarker]
+	keyAndComment := rest[keyMarker+1:]
+	comment := ""
+	if commentMarker := strings.IndexByte(keyAndComment, '$'); commentMarker >= 0 {
+		comment = keyAndComment[commentMarker+1:]
+		keyAndComment = keyAndComment[:commentMarker]
+	}
+	if err := validateKey(keyAndComment); err != nil {
+		return err
+	}
+	if strings.TrimSpace(room) == "" || strings.ContainsAny(room, "?<>@#$\r\n") {
+		return errors.New("OLCBOX URI room contains an invalid separator")
+	}
+	if strings.ContainsAny(comment, "<>@#$\r\n") {
+		return errors.New("OLCBOX URI comment contains an invalid separator")
+	}
+	return nil
+}
+
+func validateStandardTransport(token string) (string, error) {
+	transport := token
+	payload := ""
+	if start := strings.IndexByte(token, '<'); start >= 0 {
+		if !strings.HasSuffix(token, ">") || strings.Count(token, "<") != 1 || strings.Count(token, ">") != 1 || start == 0 {
+			return "", errors.New("OLCBOX transport payload is malformed")
+		}
+		transport = strings.TrimSpace(token[:start])
+		payload = token[start+1 : len(token)-1]
+	}
+	if transport == "" || strings.ContainsAny(transport, "<>@#$?&=\r\n") {
+		return "", errors.New("OLCBOX transport is malformed")
+	}
+	if payload == "" {
+		return transport, nil
+	}
+	allowed := map[string]bool{}
+	switch transport {
+	case "vp8channel":
+		allowed = map[string]bool{"vp8-fps": true, "vp8-batch": true}
+	case "seichannel":
+		allowed = map[string]bool{"fps": true, "batch": true, "frag": true, "ack-ms": true}
+	case "videochannel":
+		allowed = map[string]bool{"video-w": true, "video-h": true, "video-fps": true, "video-bitrate": true, "video-hw": true, "video-codec": true, "video-qr-size": true, "video-qr-recovery": true, "video-tile-module": true, "video-tile-rs": true}
+	default:
+		return transport, fmt.Errorf("unsupported URI transport %q", transport)
+	}
+	seen := make(map[string]bool)
+	for _, part := range strings.Split(payload, "&") {
+		key, value, ok := strings.Cut(part, "=")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if !ok || key == "" || value == "" || seen[key] || !allowed[key] || strings.ContainsAny(value, "<>@#$?&\r\n") {
+			return "", fmt.Errorf("invalid OLCBOX transport parameter %q", key)
+		}
+		seen[key] = true
+		if strings.HasPrefix(key, "video-") || key == "fps" || key == "batch" || key == "frag" || key == "ack-ms" {
+			if _, err := strconv.Atoi(value); err != nil && key != "video-bitrate" && key != "video-hw" && key != "video-codec" && key != "video-qr-recovery" {
+				return "", fmt.Errorf("OLCBOX parameter %s must be numeric", key)
+			}
+		}
+	}
+	return transport, nil
+}
+
 func clientEscape(value string) string {
 	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
 }

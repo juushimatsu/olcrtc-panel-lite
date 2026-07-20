@@ -49,8 +49,8 @@ func (s *Server) handleSubscriptionsList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	for i := range items {
-		_, resolved, renderErr := s.subscriptions.Standard(r.Context(), items[i].Slug)
-		if renderErr == nil {
+		resolved, summaryErr := s.subscriptions.Summary(r.Context(), items[i].Slug)
+		if summaryErr == nil {
 			items[i].UsedBytes = resolved.UsedBytes
 			items[i].AvailableBytes = resolved.AvailableBytes
 		}
@@ -290,27 +290,63 @@ func (s *Server) handleEntriesReorder(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSubscriptionQR(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
-	format := r.URL.Query().Get("format")
-	if format != "" && format != "client" {
-		writeError(w, r, http.StatusBadRequest, "invalid_format", "Неизвестный формат QR")
-		return
-	}
-	b, err := s.subscriptions.Bundle(r.Context(), slug)
+	format, err := normalizeSubscriptionFormat(r.URL.Query().Get("format"))
 	if err != nil {
-		s.subscriptionError(w, r, err)
+		writeError(w, r, http.StatusBadRequest, "invalid_format", err.Error())
 		return
 	}
-	writeQR(w, r, string(b), "olcrtc-subscription-"+slug+"-client.png")
+	payload := ""
+	filename := "olcrtc-subscription-" + slug + "-" + format + ".png"
+	if format == "client" {
+		b, bundleErr := s.subscriptions.Bundle(r.Context(), slug)
+		if bundleErr != nil {
+			s.subscriptionError(w, r, bundleErr)
+			return
+		}
+		payload = string(b)
+	} else {
+		sub, subErr := s.store.Subscription(r.Context(), slug)
+		if subErr != nil {
+			s.subscriptionError(w, r, subErr)
+			return
+		}
+		if !sub.Enabled {
+			s.subscriptionError(w, r, subscription.ErrDisabled)
+			return
+		}
+		payload = s.publicSubscriptionURL(slug, format)
+	}
+	writeQR(w, r, payload, filename)
 }
 
 func (s *Server) handleSubscriptionPayload(w http.ResponseWriter, r *http.Request) {
-	b, err := s.subscriptions.Bundle(r.Context(), r.PathValue("slug"))
+	format, err := normalizeSubscriptionFormat(r.URL.Query().Get("format"))
 	if err != nil {
-		s.subscriptionError(w, r, err)
+		writeError(w, r, http.StatusBadRequest, "invalid_format", err.Error())
 		return
 	}
+	payload := ""
+	if format == "client" {
+		b, bundleErr := s.subscriptions.Bundle(r.Context(), r.PathValue("slug"))
+		if bundleErr != nil {
+			s.subscriptionError(w, r, bundleErr)
+			return
+		}
+		payload = string(b)
+	} else {
+		sub, subErr := s.store.Subscription(r.Context(), r.PathValue("slug"))
+		if subErr != nil {
+			s.subscriptionError(w, r, subErr)
+			return
+		}
+		if !sub.Enabled {
+			s.subscriptionError(w, r, subscription.ErrDisabled)
+			return
+		}
+		payload = s.publicSubscriptionURL(r.PathValue("slug"), format)
+	}
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, http.StatusOK, map[string]string{"payload": string(b)})
+	writeJSON(w, http.StatusOK, map[string]string{"format": format, "payload": payload})
 }
 
 func (s *Server) handleMirrorSync(w http.ResponseWriter, r *http.Request) {
@@ -400,6 +436,22 @@ func (s *Server) handlePublicStandardSubscription(w http.ResponseWriter, r *http
 	_, _ = w.Write([]byte(body))
 }
 
+func (s *Server) handlePublicOLCBOXSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.allowPublic(w, r) {
+		return
+	}
+	body, sub, err := s.subscriptions.OLCBOX(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		s.publicSubscriptionError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	setSubscriptionRefreshHeader(w, sub.RefreshInterval)
+	w.Header().Set("Subscription-Userinfo", subscription.TrafficHeader(sub))
+	_, _ = w.Write([]byte(body))
+}
+
 func (s *Server) handlePublicSubscriptionOpen(w http.ResponseWriter, r *http.Request) {
 	if !s.allowPublic(w, r) {
 		return
@@ -431,6 +483,46 @@ func (s *Server) publicSubscriptionError(w http.ResponseWriter, r *http.Request,
 	http.Error(w, "Subscription unavailable", http.StatusServiceUnavailable)
 }
 
+func normalizeSubscriptionFormat(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "client":
+		return "client", nil
+	case "olcbox", "standard":
+		return "olcbox", nil
+	default:
+		return "", errors.New("формат должен быть client или olcbox")
+	}
+}
+
+func (s *Server) publicSubscriptionURL(slug, format string) string {
+	suffix := ""
+	if format == "olcbox" {
+		suffix = "/olcbox"
+	}
+	return strings.TrimSuffix(publicBaseURL(s.cfg), "/") + "/sub/" + slug + suffix
+}
+
+// setSubscriptionRefreshHeader is consumed by OLCBOX's auto-refresh logic.
+// The body still carries the exact human-readable #refresh value required by
+// sub.md; the header uses whole hours for clients that schedule by hour.
+func setSubscriptionRefreshHeader(w http.ResponseWriter, value string) {
+	duration, err := parseRefresh(value)
+	if err != nil || duration <= 0 {
+		return
+	}
+	hours := int(duration / time.Hour)
+	if duration%time.Hour != 0 {
+		hours++
+	}
+	if hours < 1 {
+		hours = 1
+	}
+	if hours > 720 {
+		hours = 720
+	}
+	w.Header().Set("Profile-Update-Interval", strconv.Itoa(hours))
+}
+
 func (s *Server) validateEntry(r *http.Request, entry model.SubscriptionEntry) error {
 	linked := entry.SourceInstanceID != nil
 	manual := strings.TrimSpace(entry.RawURI) != ""
@@ -438,20 +530,15 @@ func (s *Server) validateEntry(r *http.Request, entry model.SubscriptionEntry) e
 		return errors.New("entry должен быть linked instance или manual URI")
 	}
 	if linked {
-		item, err := s.instances.Get(r.Context(), *entry.SourceInstanceID)
-		if err != nil {
+		if _, err := s.instances.Get(r.Context(), *entry.SourceInstanceID); err != nil {
 			return errors.New("linked instance не найден")
-		}
-		if !instance.ClientCompatible(item.Provider, item.Transport) {
-			return fmt.Errorf("OLCRTC Client не поддерживает %s + %s", item.Provider, item.Transport)
-		}
-		if item.Provider == "wbstream" && !item.AuthTokenSet {
-			return errors.New("для WB linked instance сначала получите auth token")
 		}
 	}
 	if manual {
-		if err := instance.ValidateClientURI(entry.RawURI); err != nil {
-			return err
+		clientErr := instance.ValidateClientURI(entry.RawURI)
+		olcboxErr := instance.ValidateStandardURI(entry.RawURI)
+		if clientErr != nil && olcboxErr != nil {
+			return fmt.Errorf("URI не распознан как OLCRTC Client или OLCBOX: client=%v; olcbox=%v", clientErr, olcboxErr)
 		}
 	}
 	for _, value := range []string{entry.Name, entry.Color, entry.Icon, entry.IP, entry.Comment} {

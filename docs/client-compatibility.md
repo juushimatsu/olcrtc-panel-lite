@@ -2,7 +2,7 @@
 
 Панель формирует два разных per-instance QR. QR OLCBOX сохраняет прежний формат. QR OLCRTC Client использует compact URI Android-клиента и доступен только для `wbstream + vp8channel`, `telemost + vp8channel` и `jitsi + datachannel`.
 
-Подписки и Yandex mirror предназначены исключительно для OLCRTC Client; OLCBOX подписки не поддерживает.
+Панель публикует две проекции подписки: `/sub/<slug>` для OLCRTC Client и `/sub/<slug>/olcbox` для OLCBOX. Yandex encrypted mirror остаётся проекцией OLCRTC Client; OLCBOX использует plain-text URL.
 
 Subscription bundle:
 

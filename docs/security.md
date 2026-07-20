@@ -16,7 +16,7 @@
 - login ограничен пятью неуспешными попытками за десять минут и exponential delay;
 - request body ограничен 1 MiB, log query - 2000 строками;
 - CSP, `nosniff`, `no-referrer`, frame protection и TLS 1.2+ включены;
-- публичны только `/sub/<slug>`, `/sub/<slug>/open` и `/ca.crt`;
+- публичны только `/sub/<slug>`, `/sub/<slug>/olcbox`, `/sub/<slug>/open` и `/ca.crt`;
 - subscription slug имеет минимум 128 бит случайной энтропии и является bearer secret;
 - WB QR/URI OLCRTC Client содержит полный auth token и должен передаваться как credential; UI маскирует token до явного показа;
 - subscription QR может содержать `mirror_key`; UI маскирует его до явного показа;

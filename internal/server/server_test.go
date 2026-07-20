@@ -249,6 +249,77 @@ func TestPublicSubscriptionOpenRedirectsToClient(t *testing.T) {
 	}
 }
 
+func TestOLCBOXSubscriptionProjectionAndQR(t *testing.T) {
+	p := newTestPanel(t)
+	csrf := loginTestPanel(t, p)
+	resp := p.request(t, http.MethodPost, "/api/v1/instances", map[string]any{
+		"name": "olcbox-node", "provider": "jitsi", "transport": "datachannel",
+		"room_id": "https://meet.example/room", "dns": "8.8.8.8:53",
+	}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create instance status=%d", resp.StatusCode)
+	}
+	slug := "olcboxabcdefghijkl"
+	resp = p.request(t, http.MethodPost, "/api/v1/subscriptions", map[string]any{
+		"slug": slug, "name": "OLCBOX", "refresh": "10m", "enabled": true,
+	}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create subscription status=%d", resp.StatusCode)
+	}
+	resp = p.request(t, http.MethodPost, "/api/v1/subscriptions/"+slug+"/entries", map[string]any{
+		"source_instance_id": 1, "enabled": true,
+	}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create entry status=%d", resp.StatusCode)
+	}
+	manual := "olcrtc://jitsi?datachannel@https://meet.example/manual#" + strings.Repeat("d", 64) + "$Manual OLCBOX"
+	resp = p.request(t, http.MethodPost, "/api/v1/subscriptions/"+slug+"/entries", map[string]any{
+		"raw_uri": manual, "name": "Manual OLCBOX", "enabled": true,
+	}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create OLCBOX manual entry status=%d", resp.StatusCode)
+	}
+
+	resp = p.request(t, http.MethodGet, "/api/v1/subscriptions/"+slug+"/payload?format=olcbox", nil, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("OLCBOX payload status=%d", resp.StatusCode)
+	}
+	var payload struct {
+		Format  string `json:"format"`
+		Payload string `json:"payload"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if payload.Format != "olcbox" || !strings.HasSuffix(payload.Payload, "/sub/"+slug+"/olcbox") {
+		t.Fatalf("unexpected OLCBOX payload: %#v", payload)
+	}
+
+	resp = p.request(t, http.MethodGet, "/api/v1/subscriptions/"+slug+"/qr?format=olcbox", nil, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/png" {
+		t.Fatalf("OLCBOX QR status=%d type=%q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+
+	anonymous := &http.Client{Transport: p.client.Transport}
+	resp, err := anonymous.Get(p.server.URL + "/sub/" + slug + "/olcbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body bytes.Buffer
+	_, _ = body.ReadFrom(resp.Body)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/plain; charset=utf-8" || resp.Header.Get("Profile-Update-Interval") != "1" || !strings.Contains(body.String(), "olcrtc://jitsi?datachannel@") || !strings.Contains(body.String(), manual) || strings.Contains(body.String(), "@r/") {
+		t.Fatalf("unexpected OLCBOX feed status=%d type=%q body=%s", resp.StatusCode, resp.Header.Get("Content-Type"), body.String())
+	}
+}
+
 func TestWriteQRKeepsLongPayloadWhole(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/qr", nil)

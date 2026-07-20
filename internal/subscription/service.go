@@ -1,4 +1,4 @@
-// Package subscription renders OLCRTC Client subscriptions.
+// Package subscription renders OLCRTC Client and OLCBOX subscriptions.
 package subscription
 
 import (
@@ -41,8 +41,71 @@ func (s *Service) SetBaseURL(value string) {
 	s.mu.Unlock()
 }
 
-// Standard renders the OLCRTC Client feed and returns aggregate traffic.
+// Standard renders the backwards-compatible OLCRTC Client feed and returns
+// aggregate traffic. The format-specific renderer keeps incompatible manual
+// entries out of the feed while preserving the existing endpoint.
 func (s *Service) Standard(ctx context.Context, slug string) (string, model.Subscription, error) {
+	return s.render(ctx, slug, "client")
+}
+
+// OLCBOX renders the plain-text sub.md feed consumed by OLCBOX.
+func (s *Service) OLCBOX(ctx context.Context, slug string) (string, model.Subscription, error) {
+	return s.render(ctx, slug, "olcbox")
+}
+
+// Summary resolves traffic for every enabled entry exactly once, independent
+// of the target client format.  It is used by the administration list, where
+// a subscription can intentionally contain both Client and OLCBOX entries.
+func (s *Service) Summary(ctx context.Context, slug string) (model.Subscription, error) {
+	sub, err := s.store.Subscription(ctx, slug)
+	if err != nil {
+		return model.Subscription{}, err
+	}
+	if !sub.Enabled {
+		return sub, ErrDisabled
+	}
+	resolved := make([]resolvedEntry, 0, len(sub.Entries))
+	for _, entry := range sub.Entries {
+		if !entry.Enabled {
+			continue
+		}
+		if entry.SourceInstanceID != nil {
+			item, err := s.instances.Get(ctx, *entry.SourceInstanceID)
+			if err != nil {
+				return model.Subscription{}, err
+			}
+			resolved = append(resolved, resolvedEntry{entry: entry, source: &item})
+			continue
+		}
+		raw := strings.TrimSpace(entry.RawURI)
+		if instance.ValidateClientURI(raw) != nil && instance.ValidateStandardURI(raw) != nil {
+			continue
+		}
+		resolved = append(resolved, resolvedEntry{entry: entry, uri: raw})
+	}
+	aggregate, err := s.aggregateEntries(ctx, resolved)
+	if err != nil {
+		return model.Subscription{}, err
+	}
+	sub.UsedBytes = aggregate.used
+	sub.UploadBytes = aggregate.upload
+	sub.DownloadBytes = aggregate.download
+	sub.ExpiresAt = aggregate.expires
+	if aggregate.allLimited {
+		sub.AvailableBytes = &aggregate.available
+	} else {
+		sub.AvailableBytes = nil
+	}
+	return sub, nil
+}
+
+type resolvedEntry struct {
+	entry  model.SubscriptionEntry
+	uri    string
+	source *model.Instance
+}
+
+func (s *Service) render(ctx context.Context, slug, format string) (string, model.Subscription, error) {
 	sub, err := s.store.Subscription(ctx, slug)
 	if err != nil {
 		return "", model.Subscription{}, err
@@ -57,7 +120,21 @@ func (s *Service) Standard(ctx context.Context, slug string) (string, model.Subs
 	if sub.Icon != "" {
 		lines = append(lines, "#icon: "+safeLine(sub.Icon))
 	}
-	aggregate, err := s.aggregate(ctx, sub)
+	resolved := make([]resolvedEntry, 0, len(sub.Entries))
+	for _, entry := range sub.Entries {
+		if !entry.Enabled {
+			continue
+		}
+		uri, source, included, err := s.resolveEntryForFormat(ctx, entry, format)
+		if err != nil {
+			return "", sub, err
+		}
+		if included {
+			resolved = append(resolved, resolvedEntry{entry: entry, uri: uri, source: source})
+		}
+	}
+
+	aggregate, err := s.aggregateEntries(ctx, resolved)
 	if err != nil {
 		return "", sub, err
 	}
@@ -67,6 +144,8 @@ func (s *Service) Standard(ctx context.Context, slug string) (string, model.Subs
 	sub.ExpiresAt = aggregate.expires
 	if aggregate.allLimited {
 		sub.AvailableBytes = &aggregate.available
+	} else {
+		sub.AvailableBytes = nil
 	}
 	lines = append(lines, "#used: "+humanBytes(aggregate.used))
 	if aggregate.allLimited {
@@ -75,16 +154,9 @@ func (s *Service) Standard(ctx context.Context, slug string) (string, model.Subs
 		lines = append(lines, "#available: unlimited")
 	}
 	lines = append(lines, "")
-	for _, entry := range sub.Entries {
-		if !entry.Enabled {
-			continue
-		}
-		uri, source, err := s.resolveEntry(ctx, entry)
-		if err != nil {
-			return "", sub, err
-		}
-		lines = append(lines, uri)
-		appendEntryMetadata(&lines, entry, source)
+	for _, item := range resolved {
+		lines = append(lines, item.uri)
+		appendEntryMetadata(&lines, item.entry, item.source)
 		lines = append(lines, "")
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n")) + "\n", sub, nil
@@ -240,19 +312,28 @@ func (s *Service) GenerateMirrorKey() (string, string, error) {
 	return plain, encrypted, err
 }
 
-func (s *Service) resolveEntry(ctx context.Context, entry model.SubscriptionEntry) (string, *model.Instance, error) {
-	if entry.SourceInstanceID == nil {
-		return entry.RawURI, nil, nil
+func (s *Service) resolveEntryForFormat(ctx context.Context, entry model.SubscriptionEntry, format string) (string, *model.Instance, bool, error) {
+	if format != "client" && format != "olcbox" {
+		return "", nil, false, fmt.Errorf("unsupported subscription format %q", format)
 	}
-	uri, err := s.instances.URI(ctx, *entry.SourceInstanceID, "client")
-	if err != nil {
-		return "", nil, err
+	if entry.SourceInstanceID == nil {
+		raw := strings.TrimSpace(entry.RawURI)
+		valid := (format == "client" && instance.ValidateClientURI(raw) == nil) ||
+			(format == "olcbox" && instance.ValidateStandardURI(raw) == nil)
+		return raw, nil, valid, nil
 	}
 	item, err := s.instances.Get(ctx, *entry.SourceInstanceID)
 	if err != nil {
-		return "", nil, err
+		return "", nil, false, err
 	}
-	return uri, &item, nil
+	if format == "client" && (!instance.ClientCompatible(item.Provider, item.Transport) || (item.Provider == "wbstream" && !item.AuthTokenSet)) {
+		return "", &item, false, nil
+	}
+	uri, err := s.instances.URI(ctx, *entry.SourceInstanceID, format)
+	if err != nil {
+		return "", &item, false, err
+	}
+	return uri, &item, true, nil
 }
 
 type trafficAggregate struct {
@@ -264,14 +345,18 @@ type trafficAggregate struct {
 	expires    *time.Time
 }
 
-func (s *Service) aggregate(ctx context.Context, sub model.Subscription) (trafficAggregate, error) {
+func (s *Service) aggregateEntries(ctx context.Context, entries []resolvedEntry) (trafficAggregate, error) {
 	result := trafficAggregate{allLimited: true}
-	for _, entry := range sub.Entries {
-		if !entry.Enabled {
-			continue
-		}
+	for _, resolved := range entries {
+		entry := resolved.entry
 		if entry.SourceInstanceID != nil {
-			item, err := s.instances.Get(ctx, *entry.SourceInstanceID)
+			item := resolved.source
+			var err error
+			if item == nil {
+				var loaded model.Instance
+				loaded, err = s.instances.Get(ctx, *entry.SourceInstanceID)
+				item = &loaded
+			}
 			if err != nil {
 				return trafficAggregate{}, err
 			}

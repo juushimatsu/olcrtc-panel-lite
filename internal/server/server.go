@@ -83,6 +83,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.routesSettings(mux)
 
 	mux.HandleFunc("GET /sub/{slug}", s.handlePublicStandardSubscription)
+	mux.HandleFunc("GET /sub/{slug}/olcbox", s.handlePublicOLCBOXSubscription)
 	mux.HandleFunc("GET /sub/{slug}/open", s.handlePublicSubscriptionOpen)
 	mux.HandleFunc("/sub/{slug}/{rest...}", http.NotFound)
 	mux.HandleFunc("GET /ca.crt", s.handleCA)
