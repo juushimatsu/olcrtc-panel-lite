@@ -225,3 +225,14 @@ func TestWBSessionUsesEphemeralRuntimeState(t *testing.T) {
 		}
 	}
 }
+
+func TestWBSessionRepairsSharedRuntimeOwnershipBeforeRunner(t *testing.T) {
+	unit, err := fs.ReadFile(files, "files/systemd/olcrtc-wb-session.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	required := "ExecStartPre=+/usr/bin/chown -R --no-dereference olcrtc-wb:olcrtc-wb /run/olcrtc-wb"
+	if !strings.Contains(string(unit), required) {
+		t.Fatalf("WB session unit is missing ownership repair %q", required)
+	}
+}

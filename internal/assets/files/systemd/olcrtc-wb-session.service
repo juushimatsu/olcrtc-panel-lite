@@ -13,6 +13,7 @@ RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 StateDirectory=olcrtc-wb
 StateDirectoryMode=0700
+ExecStartPre=+/usr/bin/chown -R --no-dereference olcrtc-wb:olcrtc-wb /run/olcrtc-wb
 ExecStart=/bin/bash /usr/lib/olcrtc-panel/wb/run-session.sh
 KillMode=control-group
 TimeoutStopSec=10

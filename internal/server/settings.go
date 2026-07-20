@@ -671,6 +671,29 @@ func ensureWBRuntimeDir() error {
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("prepare WB runtime: %w: %s", err, strings.TrimSpace(string(output)))
 	}
+	account, err := user.Lookup("olcrtc-wb")
+	if err != nil {
+		return fmt.Errorf("lookup WB runtime owner: %w", err)
+	}
+	uid, err := strconv.Atoi(account.Uid)
+	if err != nil {
+		return fmt.Errorf("parse WB runtime uid: %w", err)
+	}
+	gid, err := strconv.Atoi(account.Gid)
+	if err != nil {
+		return fmt.Errorf("parse WB runtime gid: %w", err)
+	}
+	if err := filepath.Walk(wbRuntimeDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		return os.Chown(path, uid, gid)
+	}); err != nil {
+		return fmt.Errorf("repair WB runtime ownership: %w", err)
+	}
 	return nil
 }
 
