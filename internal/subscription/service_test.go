@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,7 +38,8 @@ func TestStandardRendererBindsMetadataToURI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = st.AddSubscriptionEntry(ctx, model.SubscriptionEntry{SubscriptionID: sub.ID, RawURI: "olcrtc://manual?datachannel@room#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa$manual", Name: "Manual", Enabled: true, SortOrder: 2})
+	manual := "olcrtc://jitsi@r/https%3A%2F%2Fmeet.example%2Fmanual?k=" + strings.Repeat("a", 64) + "&t=datachannel&c=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee#Manual"
+	_, err = st.AddSubscriptionEntry(ctx, model.SubscriptionEntry{SubscriptionID: sub.ID, RawURI: manual, Name: "Manual", Enabled: true, SortOrder: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,13 +52,13 @@ func TestStandardRendererBindsMetadataToURI(t *testing.T) {
 		t.Fatalf("metadata missing:\n%s", body)
 	}
 	linkedIndex := strings.Index(body, "##name: Linked")
-	manualIndex := strings.Index(body, "olcrtc://manual")
+	manualIndex := strings.Index(body, manual)
 	if linkedIndex < 0 || manualIndex < linkedIndex {
 		t.Fatalf("metadata binding/order wrong:\n%s", body)
 	}
 }
 
-func TestExclaveSkipsIncompatibleManual(t *testing.T) {
+func TestBundleUsesClientSubscriptionEndpoint(t *testing.T) {
 	root := t.TempDir()
 	st, _ := store.Open(filepath.Join(root, "panel.db"))
 	defer st.Close()
@@ -64,13 +66,72 @@ func TestExclaveSkipsIncompatibleManual(t *testing.T) {
 	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
 	ctx := context.Background()
 	sub, _ := st.CreateSubscription(ctx, model.Subscription{Slug: "abcdefghijklmnop", Name: "Test", RefreshInterval: "10m", Enabled: true}, "")
-	_, _ = st.AddSubscriptionEntry(ctx, model.SubscriptionEntry{SubscriptionID: sub.ID, RawURI: "olcrtc://manual", Enabled: true, ExclaveCompatible: false})
 	service := NewService(st, manager, secrets, "https://example")
-	body, _, err := service.Exclave(ctx, sub.Slug)
+	payload, err := service.Bundle(ctx, sub.Slug)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(body) != "" {
-		t.Fatalf("incompatible manual URI published: %q", body)
+	text := string(payload)
+	if !strings.Contains(text, `"type":"olcrtc-sub"`) || !strings.Contains(text, `"u":"https://example/sub/abcdefghijklmnop"`) || !strings.Contains(text, `"uc":false`) {
+		t.Fatalf("unexpected bundle: %s", text)
+	}
+}
+
+func TestDeleteKeepsLocalSubscriptionWhenMirrorCleanupCannotRun(t *testing.T) {
+	root := t.TempDir()
+	st, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer st.Close()
+	secrets, _ := security.NewSecrets(make([]byte, 32))
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	ctx := context.Background()
+	sub, err := st.CreateSubscription(ctx, model.Subscription{Slug: "abcdefghijklmnop", Name: "Test", RefreshInterval: "10m", Enabled: true, MirrorEnabled: true, MirrorStatus: "synced", MirrorPublicURL: "https://yadi.sk/d/test"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(st, manager, secrets, "https://example")
+	if err := service.Delete(ctx, sub.Slug); err == nil {
+		t.Fatal("delete succeeded without Yandex credentials")
+	}
+	if _, err := st.Subscription(ctx, sub.Slug); err != nil {
+		t.Fatalf("local subscription was deleted after mirror cleanup failure: %v", err)
+	}
+}
+
+func TestBundleIncludesEncryptedMirrorBootstrap(t *testing.T) {
+	root := t.TempDir()
+	st, _ := store.Open(filepath.Join(root, "panel.db"))
+	defer st.Close()
+	secrets, _ := security.NewSecrets(make([]byte, 32))
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	service := NewService(st, manager, secrets, "https://203.0.113.10:8443")
+	plainKey, encryptedKey, err := service.GenerateMirrorKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	sub, err := st.CreateSubscription(ctx, model.Subscription{Slug: "abcdefghijklmnop", Name: "Mirror", RefreshInterval: "10m", Enabled: true, MirrorEnabled: true, MirrorStatus: "synced", MirrorPublicURL: "https://yadi.sk/d/test"}, encryptedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := service.Bundle(ctx, sub.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bundle struct {
+		URL       string `json:"u"`
+		MirrorKey string `json:"mk"`
+		Mirrors   []struct {
+			Type      string `json:"t"`
+			URL       string `json:"u"`
+			Encrypted bool   `json:"e"`
+			Algorithm string `json:"a"`
+		} `json:"m"`
+		UpdateWhenConnectedOnly bool `json:"uc"`
+	}
+	if err := json.Unmarshal(payload, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.URL != "https://203.0.113.10:8443/sub/abcdefghijklmnop" || bundle.MirrorKey != plainKey || bundle.UpdateWhenConnectedOnly || len(bundle.Mirrors) != 1 || bundle.Mirrors[0].Type != "yandex_disk" || !bundle.Mirrors[0].Encrypted || bundle.Mirrors[0].Algorithm != "AES-256-GCM" {
+		t.Fatalf("unexpected mirror bundle: %s", payload)
 	}
 }

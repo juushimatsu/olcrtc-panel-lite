@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,8 @@ const (
 	wbNoVNCAddress = "127.0.0.1:6080"
 	wbNoVNCURL     = "/wb/novnc/vnc.html?autoconnect=true&resize=scale&path=wb/novnc/websockify"
 )
+
+var wbSessionStateMu sync.Mutex
 
 func (s *Server) routesSettings(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/settings", s.requireAuth(http.HandlerFunc(s.handleSettingsGet)))
@@ -58,8 +61,14 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	yandexEnabled, _ := s.store.SettingOrDefault(r.Context(), "yandex_enabled", "false")
 	yandexPath, _ := s.store.SettingOrDefault(r.Context(), "yandex_base_path", "/olcrtc/subscriptions")
 	_, _, tokenErr := s.store.Setting(r.Context(), "yandex_oauth_token")
+	wb := wbStatus()
+	wbTokenExpires, _ := s.store.SettingOrDefault(r.Context(), "wb_token_exp", "")
+	_, _, wbTokenErr := s.store.Setting(r.Context(), "wb_token")
+	wb["token_set"] = wbTokenErr == nil
+	wb["token_expires_at"] = wbTokenExpires
+	wb["token_expired"] = tokenExpired(wbTokenExpires)
 	cert, _ := certificates.Ensure(s.cfg.TLSDir, s.cfg.PublicIP)
-	writeJSON(w, http.StatusOK, map[string]any{"interface": map[string]any{"theme": theme}, "https": map[string]any{"public_ip": s.cfg.PublicIP, "port": s.cfg.PublicPort, "ca_fingerprint": cert.CAFingerprint, "server_fingerprint": cert.ServerFingerprint, "hsts": s.cfg.HSTS}, "instances": map[string]any{"maximum": s.cfg.MaxInstances}, "yandex": map[string]any{"enabled": yandexEnabled == "true", "base_path": yandexPath, "token_set": tokenErr == nil}, "wb": wbStatus(), "updates": map[string]any{"panel_version": s.cfg.PanelVersion, "upstream_sha": s.cfg.UpstreamSHA, "configured": s.cfg.ReleaseManifestURL != ""}})
+	writeJSON(w, http.StatusOK, map[string]any{"interface": map[string]any{"theme": theme}, "https": map[string]any{"public_ip": s.cfg.PublicIP, "port": s.cfg.PublicPort, "ca_fingerprint": cert.CAFingerprint, "server_fingerprint": cert.ServerFingerprint, "hsts": s.cfg.HSTS}, "instances": map[string]any{"maximum": s.cfg.MaxInstances}, "yandex": map[string]any{"enabled": yandexEnabled == "true", "base_path": yandexPath, "token_set": tokenErr == nil}, "wb": wb, "updates": map[string]any{"panel_version": s.cfg.PanelVersion, "upstream_sha": s.cfg.UpstreamSHA, "configured": s.cfg.ReleaseManifestURL != ""}})
 }
 
 func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +193,7 @@ func (s *Server) handleWBSettingsGet(w http.ResponseWriter, r *http.Request) {
 	_, _, passErr := s.store.Setting(r.Context(), "wb_proxy_password")
 	_, _, tokenErr := s.store.Setting(r.Context(), "wb_token")
 	exp, _ := s.store.SettingOrDefault(r.Context(), "wb_token_exp", "")
-	writeJSON(w, http.StatusOK, map[string]any{"proxy_mode": mode, "proxy_address": address, "proxy_password_set": passErr == nil, "token_set": tokenErr == nil, "token_exp": exp, "components": wbStatus()})
+	writeJSON(w, http.StatusOK, map[string]any{"proxy_mode": mode, "proxy_address": address, "proxy_password_set": passErr == nil, "token_set": tokenErr == nil, "token_exp": exp, "token_expired": tokenExpired(exp), "components": wbStatus()})
 }
 
 func (s *Server) handleWBSettingsPut(w http.ResponseWriter, r *http.Request) {
@@ -216,12 +225,31 @@ func (s *Server) handleWBSettingsPut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
+	wbSessionStateMu.Lock()
+	defer wbSessionStateMu.Unlock()
 	if runtime.GOOS != "linux" || !wbStatus()["installed"].(bool) || !wbRuntimeReady() {
 		writeError(w, r, http.StatusUnprocessableEntity, "wb_not_installed", "WB components установлены не полностью. Переустановите их в настройках")
 		return
 	}
 	expires := time.Now().Add(15 * time.Minute)
-	if err := s.writeWBJob(r.Context(), expires); err != nil {
+	input := struct {
+		Action string `json:"action"`
+	}{Action: "create"}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, r, http.StatusBadRequest, "invalid_request", "Укажите action create или refresh")
+		return
+	}
+	if input.Action != "create" && input.Action != "refresh" {
+		writeError(w, r, http.StatusBadRequest, "invalid_action", "Action должен быть create или refresh")
+		return
+	}
+	if current, _ := s.store.SettingOrDefault(r.Context(), "wb_session_expires", ""); current != "" {
+		if deadline, err := time.Parse(time.RFC3339, current); err == nil && time.Now().Before(deadline) && exec.CommandContext(r.Context(), "systemctl", "is-active", "--quiet", "olcrtc-wb-session.service").Run() == nil {
+			writeError(w, r, http.StatusConflict, "wb_session_active", "WB browser session уже активна")
+			return
+		}
+	}
+	if err := s.writeWBJob(r.Context(), expires, input.Action); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "wb_job_failed", "Не удалось подготовить WB job")
 		return
 	}
@@ -243,11 +271,13 @@ func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.SetSetting(r.Context(), "wb_session_expires", expires.Format(time.RFC3339), false)
 	_ = s.store.SetSetting(r.Context(), "wb_session_extended", "false", false)
-	audit(s, r, "wb.session_start", "wb", "session", "success", "")
-	writeJSON(w, http.StatusCreated, map[string]any{"active": true, "expires_at": expires, "novnc_url": wbNoVNCURL})
+	audit(s, r, "wb.session_start", "wb", "session", "success", "action="+input.Action)
+	writeJSON(w, http.StatusCreated, map[string]any{"active": true, "action": input.Action, "expires_at": expires, "novnc_url": wbNoVNCURL})
 }
 
 func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
+	wbSessionStateMu.Lock()
+	defer wbSessionStateMu.Unlock()
 	expires, _ := s.store.SettingOrDefault(r.Context(), "wb_session_expires", "")
 	extended, _ := s.store.SettingOrDefault(r.Context(), "wb_session_extended", "false")
 	active := false
@@ -268,10 +298,19 @@ func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
 	if b, err := os.ReadFile("/var/lib/olcrtc-wb/state.json"); err == nil {
 		_ = json.Unmarshal(b, &statePayload)
 		if token, ok := statePayload["token"].(string); ok && token != "" {
-			encrypted, encryptErr := s.secrets.Encrypt(token)
-			if encryptErr == nil {
-				_ = s.store.SetSetting(r.Context(), "wb_token", encrypted, true)
-				statePayload["applied"] = s.instances.UpdateWBToken(r.Context(), token)
+			expiresAt, saveErr := s.saveWBToken(r.Context(), token, statePayload["token_expires_at"])
+			if saveErr == nil {
+				result := s.instances.UpdateWBToken(r.Context(), token)
+				statePayload["applied"] = result
+				s.syncWBTokenSubscriptions(r.Context(), result)
+				if expiresAt != nil {
+					statePayload["token_expires_at"] = expiresAt.Format(time.RFC3339)
+				}
+				audit(s, r, "wb.token_playwright", "wb", "token", "success", "token applied best-effort to WB instances")
+			} else {
+				statePayload["phase"] = "error"
+				statePayload["message"] = "Token получен, но не удалось безопасно сохранить"
+				audit(s, r, "wb.token_playwright", "wb", "token", "failed", "token persistence failed")
 			}
 			delete(statePayload, "token")
 			if clean, marshalErr := json.Marshal(statePayload); marshalErr == nil {
@@ -323,17 +362,18 @@ func (s *Server) handleWBTokenRefresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_token", "Token пуст или содержит перевод строки")
 		return
 	}
-	encrypted, err := s.secrets.Encrypt(token)
+	expiresAt, err := s.saveWBToken(r.Context(), token, nil)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, "secret_encrypt_failed", "Не удалось сохранить token")
 		return
 	}
-	_ = s.store.SetSetting(r.Context(), "wb_token", encrypted, true)
-	if exp, ok := jwtExpiration(token); ok {
-		_ = s.store.SetSetting(r.Context(), "wb_token_exp", exp.Format(time.RFC3339), false)
-	}
 	result := s.instances.UpdateWBToken(r.Context(), token)
-	audit(s, r, "wb.token_refresh", "wb", "token", "success", "configs updated without subscription rewrite")
+	s.syncWBTokenSubscriptions(r.Context(), result)
+	if expiresAt != nil {
+		result["token_expires_at"] = expiresAt.Format(time.RFC3339)
+		result["token_expired"] = !expiresAt.After(time.Now())
+	}
+	audit(s, r, "wb.token_refresh", "wb", "token", "success", "configs and linked subscriptions updated best-effort")
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -465,7 +505,83 @@ func jwtExpiration(token string) (time.Time, bool) {
 	return time.Unix(claims.Exp, 0), true
 }
 
-func (s *Server) writeWBJob(ctx context.Context, expires time.Time) error {
+func tokenExpired(value string) bool {
+	expires, err := time.Parse(time.RFC3339, value)
+	return err == nil && !expires.After(time.Now())
+}
+
+func (s *Server) saveWBToken(ctx context.Context, token string, hintedExpiration any) (*time.Time, error) {
+	encrypted, err := s.secrets.Encrypt(token)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.SetSetting(ctx, "wb_token", encrypted, true); err != nil {
+		return nil, err
+	}
+	expires, ok := jwtExpiration(token)
+	if !ok {
+		expires, ok = expirationFromWorker(hintedExpiration)
+	}
+	if !ok {
+		_ = s.store.DeleteSetting(ctx, "wb_token_exp")
+		return nil, nil
+	}
+	if err := s.store.SetSetting(ctx, "wb_token_exp", expires.Format(time.RFC3339), false); err != nil {
+		return nil, err
+	}
+	return &expires, nil
+}
+
+func expirationFromWorker(value any) (time.Time, bool) {
+	var unix int64
+	switch typed := value.(type) {
+	case float64:
+		unix = int64(typed)
+	case int64:
+		unix = typed
+	case json.Number:
+		unix, _ = typed.Int64()
+	case string:
+		if parsed, err := time.Parse(time.RFC3339, typed); err == nil {
+			return parsed, true
+		}
+		unix, _ = strconv.ParseInt(typed, 10, 64)
+	}
+	if unix <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(unix, 0), true
+}
+
+func (s *Server) syncWBTokenSubscriptions(ctx context.Context, result map[string]any) {
+	updated, _ := result["updated"].([]int64)
+	unique := make(map[string]struct{})
+	for _, id := range updated {
+		slugs, err := s.store.SubscriptionSlugsForInstance(ctx, id)
+		if err != nil {
+			continue
+		}
+		for _, slug := range slugs {
+			unique[slug] = struct{}{}
+		}
+	}
+	slugs := make([]string, 0, len(unique))
+	for slug := range unique {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	mirrors := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		if sub, err := s.store.Subscription(ctx, slug); err == nil && sub.MirrorEnabled {
+			mirrors = append(mirrors, slug)
+		}
+	}
+	result["subscriptions_updated"] = slugs
+	result["mirrors_scheduled"] = mirrors
+	s.subscriptionsChanged(ctx, slugs)
+}
+
+func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action string) error {
 	if err := os.MkdirAll("/var/lib/olcrtc-wb/profile", 0o700); err != nil {
 		return err
 	}
@@ -480,7 +596,16 @@ func (s *Server) writeWBJob(ctx context.Context, expires time.Time) error {
 		proxy["server"] = mode + "://" + address
 		proxy["password"] = password
 	}
-	job := map[string]any{"action": "create", "home_url": "https://stream.wb.ru", "profile_dir": "/var/lib/olcrtc-wb/profile", "state_file": "/var/lib/olcrtc-wb/state.json", "control_file": "/var/lib/olcrtc-wb/control.json", "deadline_unix": expires.Unix(), "proxy": proxy}
+	existingRoomID := ""
+	if items, err := s.store.Instances(ctx); err == nil {
+		for _, item := range items {
+			if item.Provider == "wbstream" && item.RoomID != "" {
+				existingRoomID = item.RoomID
+				break
+			}
+		}
+	}
+	job := map[string]any{"action": action, "home_url": "https://stream.wb.ru", "existing_room_id": existingRoomID, "profile_dir": "/var/lib/olcrtc-wb/profile", "state_file": "/var/lib/olcrtc-wb/state.json", "control_file": "/var/lib/olcrtc-wb/control.json", "deadline_unix": expires.Unix(), "proxy": proxy}
 	b, err := json.Marshal(job)
 	if err != nil {
 		return err

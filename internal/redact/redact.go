@@ -10,6 +10,8 @@ var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(authorization:\s*(?:bearer|oauth)\s+)[^\s]+`),
 	regexp.MustCompile(`(?i)(auth[_ .-]?token["']?\s*[:=]\s*["']?)[^"'\s]+`),
 	regexp.MustCompile(`(?i)(oauth[_ .-]?token["']?\s*[:=]\s*["']?)[^"'\s]+`),
+	regexp.MustCompile(`(?i)([?&](?:a|auth_token|auth\.token)=)[^&#\s]+`),
+	regexp.MustCompile(`(?i)(["']?(?:mk|mirror_key)["']?\s*[:=]\s*["']?)[^"',}\s]+`),
 	regexp.MustCompile(`(?i)(proxy_pass(?:word)?["']?\s*[:=]\s*["']?)[^"'\s]+`),
 	regexp.MustCompile(`(?i)(cookie:\s*)[^\r\n]+`),
 }

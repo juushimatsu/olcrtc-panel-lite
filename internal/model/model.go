@@ -40,9 +40,13 @@ type TrafficOptions struct {
 // Instance is one independently managed olcRTC server process.
 type Instance struct {
 	ID                  int64            `json:"id"`
+	ClientID            string           `json:"client_id"`
 	Name                string           `json:"name"`
 	Provider            string           `json:"provider"`
 	AuthToken           string           `json:"auth_token,omitempty"`
+	AuthTokenSet        bool             `json:"auth_token_set"`
+	AuthTokenExpiresAt  *time.Time       `json:"auth_token_expires_at,omitempty"`
+	AuthTokenExpired    bool             `json:"auth_token_expired"`
 	Transport           string           `json:"transport"`
 	RoomID              string           `json:"room_id"`
 	RoomChannel         string           `json:"room_channel,omitempty"`
@@ -79,7 +83,7 @@ type TrafficCounter struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
-// Subscription publishes the standard and compatibility projections.
+// Subscription publishes an OLCRTC Client feed and optional encrypted mirror.
 type Subscription struct {
 	ID              int64               `json:"id"`
 	Slug            string              `json:"slug"`
@@ -103,23 +107,22 @@ type Subscription struct {
 
 // SubscriptionEntry is linked to an instance or stores an immutable manual URI.
 type SubscriptionEntry struct {
-	ID                int64      `json:"id"`
-	SubscriptionID    int64      `json:"subscription_id"`
-	SourceInstanceID  *int64     `json:"source_instance_id,omitempty"`
-	RawURI            string     `json:"raw_uri,omitempty"`
-	ExclaveCompatible bool       `json:"exclave_compatible"`
-	Name              string     `json:"name,omitempty"`
-	Color             string     `json:"color,omitempty"`
-	Icon              string     `json:"icon,omitempty"`
-	IP                string     `json:"ip,omitempty"`
-	Comment           string     `json:"comment,omitempty"`
-	ManualUsed        *int64     `json:"manual_used,omitempty"`
-	ManualAvailable   *int64     `json:"manual_available,omitempty"`
-	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
-	Enabled           bool       `json:"enabled"`
-	SortOrder         int        `json:"sort_order"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	ID               int64      `json:"id"`
+	SubscriptionID   int64      `json:"subscription_id"`
+	SourceInstanceID *int64     `json:"source_instance_id,omitempty"`
+	RawURI           string     `json:"raw_uri,omitempty"`
+	Name             string     `json:"name,omitempty"`
+	Color            string     `json:"color,omitempty"`
+	Icon             string     `json:"icon,omitempty"`
+	IP               string     `json:"ip,omitempty"`
+	Comment          string     `json:"comment,omitempty"`
+	ManualUsed       *int64     `json:"manual_used,omitempty"`
+	ManualAvailable  *int64     `json:"manual_available,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	Enabled          bool       `json:"enabled"`
+	SortOrder        int        `json:"sort_order"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 // Admin is the single panel administrator.

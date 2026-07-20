@@ -1,4 +1,4 @@
-// Package mirror encrypts and publishes the optional Yandex Disk compatibility mirror.
+// Package mirror encrypts and publishes the optional Yandex Disk subscription mirror.
 package mirror
 
 import (
@@ -37,7 +37,7 @@ func GenerateKey() ([]byte, error) {
 	return key, nil
 }
 
-// Encrypt protects a legacy subscription with AES-256-GCM.
+// Encrypt protects an OLCRTC Client subscription with AES-256-GCM.
 func Encrypt(key, plaintext []byte) ([]byte, error) {
 	aead, err := aeadForKey(key)
 	if err != nil {
@@ -47,7 +47,7 @@ func Encrypt(key, plaintext []byte) ([]byte, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("mirror nonce: %w", err)
 	}
-	ciphertext := aead.Seal(nil, nonce, plaintext, []byte("olcrtc-sub-mirror:v1"))
+	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
 	envelope := Envelope{Type: "olcrtc-sub-mirror", Version: 1, Algorithm: "AES-256-GCM", Nonce: base64.RawURLEncoding.EncodeToString(nonce), Ciphertext: base64.RawURLEncoding.EncodeToString(ciphertext)}
 	return json.Marshal(envelope)
 }
@@ -73,7 +73,7 @@ func Decrypt(key, encoded []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	plain, err := aead.Open(nil, nonce, ciphertext, []byte("olcrtc-sub-mirror:v1"))
+	plain, err := aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, errors.New("decrypt mirror")
 	}
@@ -109,7 +109,13 @@ func NewClient(token, basePath string) *Client {
 
 // Upload stores and publishes one encrypted JSON file.
 func (c *Client) Upload(ctx context.Context, slug string, payload []byte) (string, error) {
+	if c.Token == "" {
+		return "", errors.New("yandex OAuth token is not configured")
+	}
 	remotePath := path.Join(c.BasePath, slug+".json")
+	if err := c.ensureDirs(ctx, path.Dir(remotePath)); err != nil {
+		return "", fmt.Errorf("prepare Yandex mirror directory: %w", err)
+	}
 	params := url.Values{"path": {remotePath}, "overwrite": {"true"}}
 	var link struct {
 		Href string `json:"href"`
@@ -118,8 +124,11 @@ func (c *Client) Upload(ctx context.Context, slug string, payload []byte) (strin
 		return "", fmt.Errorf("request Yandex upload URL: %w", err)
 	}
 	u, err := url.Parse(link.Href)
-	host := strings.ToLower(u.Hostname())
-	trustedUploadHost := host == "uploader.disk.yandex.net" || strings.HasSuffix(host, ".yandex.net") || strings.HasSuffix(host, ".yandex.ru")
+	trustedUploadHost := false
+	if err == nil {
+		host := strings.ToLower(u.Hostname())
+		trustedUploadHost = host == "uploader.disk.yandex.net" || strings.HasSuffix(host, ".yandex.net") || strings.HasSuffix(host, ".yandex.ru")
+	}
 	if err != nil || u.Scheme != "https" || !trustedUploadHost {
 		if !strings.HasPrefix(c.BaseURL, "http://127.0.0.1") && !strings.HasPrefix(c.BaseURL, "http://localhost") {
 			return "", errors.New("yandex returned an unsafe upload URL")
@@ -139,7 +148,9 @@ func (c *Client) Upload(ctx context.Context, slug string, payload []byte) (strin
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("yandex upload status %d", resp.StatusCode)
 	}
-	_ = c.requestJSON(ctx, http.MethodPut, "/resources/publish?"+url.Values{"path": {remotePath}}.Encode(), nil, nil)
+	if err := c.publish(ctx, remotePath); err != nil {
+		return "", fmt.Errorf("publish Yandex mirror: %w", err)
+	}
 	var metadata struct {
 		PublicURL string `json:"public_url"`
 	}
@@ -152,10 +163,73 @@ func (c *Client) Upload(ctx context.Context, slug string, payload []byte) (strin
 	return metadata.PublicURL, nil
 }
 
+func (c *Client) publish(ctx context.Context, remotePath string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, strings.TrimRight(c.BaseURL, "/")+"/resources/publish?"+url.Values{"path": {remotePath}}.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "OAuth "+c.Token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict || resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return nil
+	}
+	message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(message)))
+}
+
 // Delete removes a remote encrypted mirror.
 func (c *Client) Delete(ctx context.Context, slug string) error {
+	if c.Token == "" {
+		return errors.New("yandex OAuth token is not configured")
+	}
 	remotePath := path.Join(c.BasePath, slug+".json")
-	return c.requestJSON(ctx, http.MethodDelete, "/resources?"+url.Values{"path": {remotePath}, "permanently": {"true"}}.Encode(), nil, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, strings.TrimRight(c.BaseURL, "/")+"/resources?"+url.Values{"path": {remotePath}, "permanently": {"true"}}.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "OAuth "+c.Token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return nil
+	}
+	message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(message)))
+}
+
+func (c *Client) ensureDirs(ctx context.Context, directory string) error {
+	directory = strings.Trim(directory, "/")
+	if directory == "" {
+		return nil
+	}
+	current := ""
+	for _, segment := range strings.Split(directory, "/") {
+		current += "/" + segment
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, strings.TrimRight(c.BaseURL, "/")+"/resources?"+url.Values{"path": {current}}.Encode(), nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "OAuth "+c.Token)
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return err
+		}
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusConflict {
+			return fmt.Errorf("mkdir %s status %d: %s", current, resp.StatusCode, strings.TrimSpace(string(message)))
+		}
+	}
+	return nil
 }
 
 func (c *Client) requestJSON(ctx context.Context, method, suffix string, body io.Reader, output any) error {

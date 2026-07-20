@@ -25,7 +25,7 @@ func (s *Server) routesInstances(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/instances/{id}", s.requireAuth(http.HandlerFunc(s.handleInstanceGet)))
 	mux.Handle("PUT /api/v1/instances/{id}", s.requireAuth(http.HandlerFunc(s.handleInstanceUpdate)))
 	mux.Handle("DELETE /api/v1/instances/{id}", s.requireAuth(http.HandlerFunc(s.handleInstanceDelete)))
-	for _, action := range []string{"start", "stop", "restart", "duplicate", "rotate-key", "change-room", "reset-traffic", "diagnostics"} {
+	for _, action := range []string{"start", "stop", "restart", "duplicate", "rotate-key", "rotate-client-id", "change-room", "reset-traffic", "diagnostics"} {
 		mux.Handle("POST /api/v1/instances/{id}/"+action, s.requireAuth(http.HandlerFunc(s.handleInstanceAction)))
 	}
 	mux.Handle("GET /api/v1/instances/{id}/uri", s.requireAuth(http.HandlerFunc(s.handleInstanceURI)))
@@ -145,6 +145,8 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		err = s.instances.Restart(r.Context(), id)
 	case "rotate-key":
 		err = s.instances.RotateKey(r.Context(), id)
+	case "rotate-client-id":
+		err = s.instances.RotateClientID(r.Context(), id)
 	case "reset-traffic":
 		err = s.store.ResetTraffic(r.Context(), id, time.Now())
 	case "duplicate":
@@ -192,7 +194,7 @@ func (s *Server) handleInstanceAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	audit(s, r, "instance."+strings.ReplaceAll(action, "-", "_"), "instance", strconv.FormatInt(id, 10), "success", "")
-	if action == "rotate-key" {
+	if action == "rotate-key" || action == "rotate-client-id" {
 		s.subscriptionsChanged(r.Context(), slugs)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -222,13 +224,14 @@ func (s *Server) handleInstanceURI(w http.ResponseWriter, r *http.Request) {
 	}
 	format := r.URL.Query().Get("format")
 	if format == "" {
-		format = "standard"
+		format = "olcbox"
 	}
 	value, err := s.instances.URI(r.Context(), id, format)
 	if err != nil {
 		s.instanceError(w, r, err)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]string{"format": format, "uri": value})
 }
 
@@ -240,7 +243,7 @@ func (s *Server) handleInstanceQR(w http.ResponseWriter, r *http.Request) {
 	}
 	format := r.URL.Query().Get("format")
 	if format == "" {
-		format = "standard"
+		format = "olcbox"
 	}
 	payload, err := s.instances.URI(r.Context(), id, format)
 	if err != nil {
@@ -294,7 +297,7 @@ func instanceSummary(items []model.Instance) map[string]any {
 }
 
 func writeQR(w http.ResponseWriter, r *http.Request, payload, filename string) {
-	code, err := qr.Encode(payload, qr.M)
+	code, err := qr.Encode(payload, qr.L)
 	if err != nil {
 		writeError(w, r, http.StatusUnprocessableEntity, "qr_too_large", "Данные не помещаются в QR-код")
 		return

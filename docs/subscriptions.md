@@ -1,43 +1,56 @@
 # URI и подписки
 
-Standard projection следует официальным документам upstream:
+## QR инстанса
 
-- `temp-files/olcrtc-master/docs/uri.md`;
-- `temp-files/olcrtc-master/docs/sub.md`.
+У каждого инстанса остаются два независимых формата:
 
-## Standard URI
+- **QR OLCBOX** — прежний официальный URI панели. Он не содержит WB auth token;
+- **QR OLCRTC Client** — compact URI Android-клиента с обязательными `key` и постоянным UUID `client_id`.
+
+OLCRTC Client поддерживает только комбинации:
+
+- `wbstream + vp8channel`;
+- `telemost + vp8channel`;
+- `jitsi + datachannel`.
+
+Для остальных комбинаций QR OLCBOX остаётся доступным, а QR OLCRTC Client отключён с пояснением. WB URI клиента содержит полный `auth_token`, поэтому такой URI и QR являются credential. UI маскирует token до нажатия «Показать», после чего разрешает копирование. QR кодируется без сжатия и обрезки с error correction `L`.
+
+Пример:
 
 ```text
-olcrtc://<Auth>?<Transport>@<RoomID>#<EncryptionKey>$<MIMO>
-olcrtc://<Auth>?<Transport><key=value&key=value>@<RoomID>#<EncryptionKey>$<MIMO>
+olcrtc://wbstream@r/<room>?k=<key>&t=vp8channel&f=<fps>&b=<batch>&c=<client_id>&a=<auth_token>&d=<dns>#<name>
 ```
 
-Transport payload содержит только документированные поля. Значения, равные upstream defaults, опускаются. WB token, Client ID, local data path и proxy никогда не включаются.
+`client_id` создаётся для каждого нового и существующего инстанса. Его ротация обновляет связанные подписки и mirrors и перезапускает работающий инстанс.
 
-## Standard endpoint
+## Подписка OLCRTC Client
+
+OLCBOX подписки не поддерживает. Endpoint подписки предназначен только для OLCRTC Client:
 
 ```text
 GET /sub/<slug>
+GET /sub/<slug>/open
 ```
 
-Ответ - `text/plain; charset=utf-8`, `Cache-Control: no-store`. Global metadata начинается с `#`, metadata entry - с `##` и относится к ближайшему предыдущему URI. Linked entry рендерится из текущей конфигурации инстанса; manual URI не переписывается.
+Первый endpoint возвращает `text/plain; charset=utf-8`: комментарии metadata и по одному совместимому `olcrtc://` URI на строку. Linked entry формируется из текущего key, `client_id` и, для WB, auth token. Новые manual entries принимают только URI, разбираемые OLCRTC Client.
 
-## Exclave compatibility
+`/open` перенаправляет в `olcrtc://subscription?...`. Ответы не кэшируются. Slug содержит не менее 128 бит случайной энтропии и является bearer secret.
 
-```text
-GET /sub/<slug>/exclave
+## QR подписки
+
+У подписки один QR OLCRTC Client. В нём находится компактный JSON без профилей, gzip и multipart:
+
+```json
+{"type":"olcrtc-sub","v":2,"n":"test","s":"Rg59s8rNf","u":"https://89.125.93.65:3000/sub/Rg59s8rNf","m":[{"t":"yandex_disk","u":"https://yadi.sk/d/wXp0dmxaTw6q3w","e":true,"a":"AES-256-GCM"}],"mk":"jaPGwdZdc1HaROEm7fEO_7ZriNDUNvh2pYzCh8xXKFg","uc":false,"d":true}
 ```
 
-Это отдельная legacy-проекция: одна Exclave-compatible URI на строку. Она не меняет standard body. Manual entry публикуется здесь только с `exclave_compatible=true`.
+Под QR отображается точный JSON. `mirror_key` маскируется до нажатия «Показать» и только затем может быть скопирован.
 
-## QR
+## Yandex mirror
 
-- standard instance QR содержит standard URI;
-- Exclave instance QR содержит compatibility URI;
-- standard subscription QR содержит только HTTPS URL `/sub/<slug>`;
-- Exclave/Yandex QR содержит JSON bundle `olcrtc-sub`, version 2.
+Mirror содержит тот же OLCRTC Client feed, зашифрованный AES-256-GCM без AAD. Per-subscription key остаётся в панели и в QR, но не загружается на Yandex Disk. Перед upload панель создаёт недостающие каталоги и допускает повторную публикацию существующего файла с тем же key/URL.
 
-QR создаётся локально панелью, payload не отправляется внешним QR-сервисам.
+Удаление подписки сериализовано с mirror sync: сначала подтверждается удаление Yandex-файла (`404` считается успехом), затем удаляется локальная подписка. При ошибке Yandex локальное удаление отменяется, чтобы не оставить публичный orphan.
 
 ## Traffic metadata
 

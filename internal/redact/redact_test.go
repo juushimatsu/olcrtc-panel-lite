@@ -14,3 +14,13 @@ func TestText(t *testing.T) {
 		}
 	}
 }
+
+func TestTextRedactsCompactClientSecrets(t *testing.T) {
+	input := `uri=olcrtc://wbstream@r/room?k=key&t=vp8channel&c=client&a=full.jwt.token&d=1.1.1.1%3A53 payload={"mk":"mirror-secret"}`
+	got := Text(input)
+	for _, secret := range []string{"full.jwt.token", "mirror-secret"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("compact secret %q leaked in %q", secret, got)
+		}
+	}
+}

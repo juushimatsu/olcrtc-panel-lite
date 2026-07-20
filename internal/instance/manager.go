@@ -3,14 +3,18 @@ package instance
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/security"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/store"
@@ -85,6 +89,7 @@ func (m *Manager) Update(ctx context.Context, item model.Instance, clearAuth, cl
 		return model.Instance{}, err
 	}
 	ApplyDefaults(&item)
+	item.ClientID = old.ClientID
 	if item.AuthToken == "" && !clearAuth {
 		item.AuthToken = old.AuthToken
 	} else if clearAuth {
@@ -164,6 +169,7 @@ func (m *Manager) Duplicate(ctx context.Context, id int64) (model.Instance, erro
 		return model.Instance{}, err
 	}
 	item.ID = 0
+	item.ClientID = ""
 	item.Name += " - копия"
 	item.CreatedAt = time.Time{}
 	item.UpdatedAt = time.Time{}
@@ -196,6 +202,38 @@ func (m *Manager) RotateKey(ctx context.Context, id int64) error {
 			_ = m.systemd.Restart(ctx, id)
 			return fmt.Errorf("key rotation failed and was rolled back: %w", restartErr)
 		}
+	}
+	return nil
+}
+
+// RotateClientID replaces the persistent OLCRTC Client identity and restarts
+// a running instance. Database state is rolled back if restart fails.
+func (m *Manager) RotateClientID(ctx context.Context, id int64) error {
+	old, err := m.store.Instance(ctx, id)
+	if err != nil {
+		return err
+	}
+	updated := old
+	updated.ClientID = uuid.NewString()
+	if _, err := m.store.UpdateInstance(ctx, updated); err != nil {
+		return err
+	}
+	status, statusErr := m.systemd.Status(ctx, id)
+	if statusErr != nil {
+		_, _ = m.store.UpdateInstance(ctx, old)
+		return fmt.Errorf("client_id rotation could not determine instance state and was rolled back: %w", statusErr)
+	}
+	if status.State != "running" {
+		return nil
+	}
+	restartErr := m.systemd.Restart(ctx, id)
+	if restartErr == nil {
+		restartErr = systemd.WaitActive(ctx, m.systemd, id, 20*time.Second)
+	}
+	if restartErr != nil {
+		_, _ = m.store.UpdateInstance(ctx, old)
+		_ = m.systemd.Restart(ctx, id)
+		return fmt.Errorf("client_id rotation failed and was rolled back: %w", restartErr)
 	}
 	return nil
 }
@@ -271,13 +309,14 @@ func (m *Manager) URI(ctx context.Context, id int64, format string) (string, err
 	if err != nil {
 		return "", err
 	}
-	if format == "exclave" {
-		return ExclaveURI(item, key, item.Name)
-	}
-	if format != "standard" {
+	switch format {
+	case "client":
+		return ClientURI(item, key, item.Name)
+	case "olcbox", "standard":
+		return StandardURI(item, key, item.Name)
+	default:
 		return "", errors.New("unsupported URI format")
 	}
-	return StandardURI(item, key, item.Name)
 }
 
 // ChangeRoom updates only Room ID through the same atomic path.
@@ -325,6 +364,13 @@ func (m *Manager) UpdateWBToken(ctx context.Context, token string) map[string]an
 }
 
 func (m *Manager) decorate(ctx context.Context, item model.Instance) (model.Instance, error) {
+	if token, err := m.secrets.Decrypt(item.AuthToken); err == nil {
+		item.AuthTokenSet = token != ""
+		if expires, ok := authTokenExpiration(token); ok {
+			item.AuthTokenExpiresAt = &expires
+			item.AuthTokenExpired = !expires.After(time.Now())
+		}
+	}
 	item.AuthToken = ""
 	item.OutboundProxy = ""
 	status, err := m.systemd.Status(ctx, item.ID)
@@ -337,6 +383,24 @@ func (m *Manager) decorate(ctx context.Context, item model.Instance) (model.Inst
 	item.NetworkIngressBytes = status.IngressBytes
 	item.NetworkEgressBytes = status.EgressBytes
 	return item, nil
+}
+
+func authTokenExpiration(token string) (time.Time, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return time.Time{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Expires int64 `json:"exp"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Expires <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(claims.Expires, 0), true
 }
 
 func (m *Manager) raw(ctx context.Context, id int64) (model.Instance, error) {

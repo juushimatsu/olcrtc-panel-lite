@@ -83,7 +83,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.routesSettings(mux)
 
 	mux.HandleFunc("GET /sub/{slug}", s.handlePublicStandardSubscription)
-	mux.HandleFunc("GET /sub/{slug}/exclave", s.handlePublicExclaveSubscription)
+	mux.HandleFunc("GET /sub/{slug}/open", s.handlePublicSubscriptionOpen)
+	mux.HandleFunc("/sub/{slug}/{rest...}", http.NotFound)
 	mux.HandleFunc("GET /ca.crt", s.handleCA)
 	proxyTarget, _ := url.Parse("http://127.0.0.1:6080")
 	novnc := httputil.NewSingleHostReverseProxy(proxyTarget)

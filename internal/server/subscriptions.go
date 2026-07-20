@@ -3,7 +3,9 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/config"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/instance"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/security"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/store"
@@ -34,6 +37,7 @@ func (s *Server) routesSubscriptions(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/v1/subscriptions/{slug}/entries/{id}", s.requireAuth(http.HandlerFunc(s.handleEntryDelete)))
 	mux.Handle("POST /api/v1/subscriptions/{slug}/reorder", s.requireAuth(http.HandlerFunc(s.handleEntriesReorder)))
 	mux.Handle("GET /api/v1/subscriptions/{slug}/qr", s.requireAuth(http.HandlerFunc(s.handleSubscriptionQR)))
+	mux.Handle("GET /api/v1/subscriptions/{slug}/payload", s.requireAuth(http.HandlerFunc(s.handleSubscriptionPayload)))
 	mux.Handle("POST /api/v1/subscriptions/{slug}/mirror/sync", s.requireAuth(http.HandlerFunc(s.handleMirrorSync)))
 	mux.Handle("GET /api/v1/subscriptions/{slug}/mirror", s.requireAuth(http.HandlerFunc(s.handleMirrorStatus)))
 }
@@ -89,6 +93,9 @@ func (s *Server) handleSubscriptionsCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	audit(s, r, "subscription.create", "subscription", item.Slug, "success", "")
+	if item.MirrorEnabled {
+		s.subscriptionsChanged(r.Context(), []string{item.Slug})
+	}
 	writeJSON(w, http.StatusCreated, item)
 }
 
@@ -116,6 +123,7 @@ func (s *Server) handleSubscriptionUpdate(w http.ResponseWriter, r *http.Request
 	input.ID = current.ID
 	input.Slug = slug
 	input.Entries = current.Entries
+	input.MirrorPublicURL = current.MirrorPublicURL
 	if input.RefreshInterval == "" {
 		input.RefreshInterval = current.RefreshInterval
 	}
@@ -134,16 +142,17 @@ func (s *Server) handleSubscriptionUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	audit(s, r, "subscription.update", "subscription", slug, "success", "")
+	s.subscriptionsChanged(r.Context(), []string{slug})
 	writeJSON(w, http.StatusOK, item)
 }
 
 func (s *Server) handleSubscriptionDelete(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
-	if err := s.store.DeleteSubscription(r.Context(), slug); err != nil {
+	if err := s.subscriptions.Delete(r.Context(), slug); err != nil {
 		s.subscriptionError(w, r, err)
 		return
 	}
-	audit(s, r, "subscription.delete", "subscription", slug, "success", "local state deleted")
+	audit(s, r, "subscription.delete", "subscription", slug, "success", "remote mirror removed before local state")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -183,7 +192,7 @@ func (s *Server) handleEntriesCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "entry_create_failed", "Не удалось добавить entry")
 		return
 	}
-	_ = s.subscriptions.Touch(r.Context(), sub.Slug)
+	s.subscriptionsChanged(r.Context(), []string{sub.Slug})
 	audit(s, r, "subscription.entry_create", "subscription", sub.Slug, "success", "entry_id="+strconv.FormatInt(item.ID, 10))
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -220,7 +229,7 @@ func (s *Server) handleEntryUpdate(w http.ResponseWriter, r *http.Request) {
 		s.subscriptionError(w, r, err)
 		return
 	}
-	_ = s.subscriptions.Touch(r.Context(), sub.Slug)
+	s.subscriptionsChanged(r.Context(), []string{sub.Slug})
 	audit(s, r, "subscription.entry_update", "subscription", sub.Slug, "success", "entry_id="+strconv.FormatInt(item.ID, 10))
 	writeJSON(w, http.StatusOK, item)
 }
@@ -240,7 +249,7 @@ func (s *Server) handleEntryDelete(w http.ResponseWriter, r *http.Request) {
 		s.subscriptionError(w, r, err)
 		return
 	}
-	_ = s.subscriptions.Touch(r.Context(), sub.Slug)
+	s.subscriptionsChanged(r.Context(), []string{sub.Slug})
 	audit(s, r, "subscription.entry_delete", "subscription", sub.Slug, "success", "entry_id="+strconv.FormatInt(id, 10))
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -275,32 +284,33 @@ func (s *Server) handleEntriesReorder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "reorder_failed", "Не удалось изменить порядок")
 		return
 	}
-	_ = s.subscriptions.Touch(r.Context(), sub.Slug)
+	s.subscriptionsChanged(r.Context(), []string{sub.Slug})
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleSubscriptionQR(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	format := r.URL.Query().Get("format")
-	if format == "" {
-		format = "standard"
-	}
-	var payload string
-	switch format {
-	case "standard":
-		payload = strings.TrimRight(publicBaseURL(s.cfg), "/") + "/sub/" + slug
-	case "exclave":
-		b, err := s.subscriptions.Bundle(r.Context(), slug)
-		if err != nil {
-			s.subscriptionError(w, r, err)
-			return
-		}
-		payload = string(b)
-	default:
+	if format != "" && format != "client" {
 		writeError(w, r, http.StatusBadRequest, "invalid_format", "Неизвестный формат QR")
 		return
 	}
-	writeQR(w, r, payload, "olcrtc-subscription-"+slug+"-"+format+".png")
+	b, err := s.subscriptions.Bundle(r.Context(), slug)
+	if err != nil {
+		s.subscriptionError(w, r, err)
+		return
+	}
+	writeQR(w, r, string(b), "olcrtc-subscription-"+slug+"-client.png")
+}
+
+func (s *Server) handleSubscriptionPayload(w http.ResponseWriter, r *http.Request) {
+	b, err := s.subscriptions.Bundle(r.Context(), r.PathValue("slug"))
+	if err != nil {
+		s.subscriptionError(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]string{"payload": string(b)})
 }
 
 func (s *Server) handleMirrorSync(w http.ResponseWriter, r *http.Request) {
@@ -366,6 +376,9 @@ func (s *Server) handleSubscriptionsImport(w http.ResponseWriter, r *http.Reques
 				_, _ = s.store.AddSubscriptionEntry(r.Context(), entry)
 			}
 		}
+		if item.MirrorEnabled {
+			s.subscriptionsChanged(r.Context(), []string{item.Slug})
+		}
 		created++
 	}
 	audit(s, r, "subscription.import", "subscription", "", "success", "created="+strconv.Itoa(created))
@@ -387,19 +400,23 @@ func (s *Server) handlePublicStandardSubscription(w http.ResponseWriter, r *http
 	_, _ = w.Write([]byte(body))
 }
 
-func (s *Server) handlePublicExclaveSubscription(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handlePublicSubscriptionOpen(w http.ResponseWriter, r *http.Request) {
 	if !s.allowPublic(w, r) {
 		return
 	}
-	body, sub, err := s.subscriptions.Exclave(r.Context(), r.PathValue("slug"))
+	sub, err := s.store.Subscription(r.Context(), r.PathValue("slug"))
 	if err != nil {
 		s.publicSubscriptionError(w, r, err)
 		return
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if !sub.Enabled {
+		s.publicSubscriptionError(w, r, subscription.ErrDisabled)
+		return
+	}
+	source := strings.TrimSuffix(publicBaseURL(s.cfg), "/") + "/sub/" + sub.Slug
+	target := url.URL{Scheme: "olcrtc", Host: "subscription", RawQuery: url.Values{"url": {source}, "name": {sub.Name}}.Encode()}
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Subscription-Userinfo", subscription.TrafficHeader(sub))
-	_, _ = w.Write([]byte(body))
+	http.Redirect(w, r, target.String(), http.StatusFound)
 }
 
 func (s *Server) publicSubscriptionError(w http.ResponseWriter, r *http.Request, err error) {
@@ -421,12 +438,21 @@ func (s *Server) validateEntry(r *http.Request, entry model.SubscriptionEntry) e
 		return errors.New("entry должен быть linked instance или manual URI")
 	}
 	if linked {
-		if _, err := s.instances.Get(r.Context(), *entry.SourceInstanceID); err != nil {
+		item, err := s.instances.Get(r.Context(), *entry.SourceInstanceID)
+		if err != nil {
 			return errors.New("linked instance не найден")
 		}
+		if !instance.ClientCompatible(item.Provider, item.Transport) {
+			return fmt.Errorf("OLCRTC Client не поддерживает %s + %s", item.Provider, item.Transport)
+		}
+		if item.Provider == "wbstream" && !item.AuthTokenSet {
+			return errors.New("для WB linked instance сначала получите auth token")
+		}
 	}
-	if manual && !strings.HasPrefix(entry.RawURI, "olcrtc://") {
-		return errors.New("manual URI должен начинаться с olcrtc://")
+	if manual {
+		if err := instance.ValidateClientURI(entry.RawURI); err != nil {
+			return err
+		}
 	}
 	for _, value := range []string{entry.Name, entry.Color, entry.Icon, entry.IP, entry.Comment} {
 		if strings.ContainsAny(value, "\r\n") {

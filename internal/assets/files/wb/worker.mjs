@@ -103,6 +103,12 @@ async function main() {
     writeState('refreshing_token', 'Получение свежего токена WB...', 65);
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.waitForTimeout(3000);
+    if (!accountToken && job.existing_room_id) {
+      await page.goto(`https://stream.wb.ru/${encodeURIComponent(job.existing_room_id)}`, {
+        waitUntil: 'domcontentloaded', timeout: 60_000,
+      });
+      await page.waitForTimeout(3000);
+    }
   }
   const waitUntil = Date.now() + 45_000;
   while ((!accountToken || (job.action === 'create' && !roomID)) && Date.now() < waitUntil) { roomID ||= findRoomID(page.url()); await page.waitForTimeout(500); }

@@ -5,6 +5,7 @@
 - `golang.org/x/crypto` - Go Authors BSD-style license.
 - `golang.org/x/sys` - Go Authors BSD-style license.
 - `gopkg.in/yaml.v3` - Apache-2.0/MIT notices согласно upstream package.
+- `github.com/google/uuid` - UUID generation, BSD-3-Clause license.
 - `rsc.io/qr` - Go Authors BSD-style license.
 - Playwright, Chromium, noVNC, websockify, Xvfb, openbox и x11vnc устанавливаются только опционально на VPS и сохраняют собственные лицензии.
 

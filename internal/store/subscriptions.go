@@ -129,8 +129,8 @@ func (s *Store) AddSubscriptionEntry(ctx context.Context, item model.Subscriptio
 	if item.ExpiresAt != nil {
 		expires = formatTime(*item.ExpiresAt)
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO subscription_entries(subscription_id, source_instance_id, raw_uri, exclave_compatible, name, color, icon, ip, comment, manual_used, manual_available, expires_at, enabled, sort_order, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.SubscriptionID, item.SourceInstanceID, nullableString(item.RawURI), item.ExclaveCompatible, item.Name, item.Color, item.Icon, item.IP, item.Comment, item.ManualUsed, item.ManualAvailable, expires, item.Enabled, item.SortOrder, formatTime(now), formatTime(now))
+	result, err := s.db.ExecContext(ctx, `INSERT INTO subscription_entries(subscription_id, source_instance_id, raw_uri, name, color, icon, ip, comment, manual_used, manual_available, expires_at, enabled, sort_order, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.SubscriptionID, item.SourceInstanceID, nullableString(item.RawURI), item.Name, item.Color, item.Icon, item.IP, item.Comment, item.ManualUsed, item.ManualAvailable, expires, item.Enabled, item.SortOrder, formatTime(now), formatTime(now))
 	if err != nil {
 		return model.SubscriptionEntry{}, fmt.Errorf("add subscription entry: %w", err)
 	}
@@ -144,8 +144,8 @@ func (s *Store) UpdateSubscriptionEntry(ctx context.Context, item model.Subscrip
 	if item.ExpiresAt != nil {
 		expires = formatTime(*item.ExpiresAt)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE subscription_entries SET source_instance_id=?, raw_uri=?, exclave_compatible=?, name=?, color=?, icon=?, ip=?, comment=?, manual_used=?, manual_available=?, expires_at=?, enabled=?, sort_order=?, updated_at=? WHERE id=?`,
-		item.SourceInstanceID, nullableString(item.RawURI), item.ExclaveCompatible, item.Name, item.Color, item.Icon, item.IP, item.Comment, item.ManualUsed, item.ManualAvailable, expires, item.Enabled, item.SortOrder, formatTime(time.Now()), item.ID)
+	result, err := s.db.ExecContext(ctx, `UPDATE subscription_entries SET source_instance_id=?, raw_uri=?, name=?, color=?, icon=?, ip=?, comment=?, manual_used=?, manual_available=?, expires_at=?, enabled=?, sort_order=?, updated_at=? WHERE id=?`,
+		item.SourceInstanceID, nullableString(item.RawURI), item.Name, item.Color, item.Icon, item.IP, item.Comment, item.ManualUsed, item.ManualAvailable, expires, item.Enabled, item.SortOrder, formatTime(time.Now()), item.ID)
 	if err != nil {
 		return model.SubscriptionEntry{}, fmt.Errorf("update subscription entry: %w", err)
 	}
@@ -161,7 +161,7 @@ func (s *Store) SubscriptionEntry(ctx context.Context, id int64) (model.Subscrip
 	return scanEntry(s.db.QueryRowContext(ctx, entrySelect+` WHERE id=?`, id).Scan)
 }
 
-const entrySelect = `SELECT id, subscription_id, source_instance_id, raw_uri, exclave_compatible, name, color, icon, ip, comment, manual_used, manual_available, expires_at, enabled, sort_order, created_at, updated_at FROM subscription_entries`
+const entrySelect = `SELECT id, subscription_id, source_instance_id, raw_uri, name, color, icon, ip, comment, manual_used, manual_available, expires_at, enabled, sort_order, created_at, updated_at FROM subscription_entries`
 
 // SubscriptionEntries returns entries in publish order.
 func (s *Store) SubscriptionEntries(ctx context.Context, subscriptionID int64) ([]model.SubscriptionEntry, error) {
@@ -185,14 +185,13 @@ func scanEntry(scan scanner) (model.SubscriptionEntry, error) {
 	var item model.SubscriptionEntry
 	var source sql.NullInt64
 	var raw sql.NullString
-	var compatible int
 	var used sql.NullInt64
 	var available sql.NullInt64
 	var expires sql.NullString
 	var enabled int
 	var created string
 	var updated string
-	err := scan(&item.ID, &item.SubscriptionID, &source, &raw, &compatible, &item.Name, &item.Color, &item.Icon, &item.IP, &item.Comment, &used, &available, &expires, &enabled, &item.SortOrder, &created, &updated)
+	err := scan(&item.ID, &item.SubscriptionID, &source, &raw, &item.Name, &item.Color, &item.Icon, &item.IP, &item.Comment, &used, &available, &expires, &enabled, &item.SortOrder, &created, &updated)
 	if err != nil {
 		return model.SubscriptionEntry{}, err
 	}
@@ -203,7 +202,6 @@ func scanEntry(scan scanner) (model.SubscriptionEntry, error) {
 	if raw.Valid {
 		item.RawURI = raw.String
 	}
-	item.ExclaveCompatible = compatible != 0
 	if used.Valid {
 		v := used.Int64
 		item.ManualUsed = &v
@@ -289,7 +287,7 @@ func (s *Store) SubscriptionSlugsForInstance(ctx context.Context, instanceID int
 	return slugs, rows.Err()
 }
 
-// TouchSubscriptions updates the standard #update value after content changes.
+// TouchSubscriptions updates the feed #update value after content changes.
 func (s *Store) TouchSubscriptions(ctx context.Context, slugs []string) error {
 	for _, slug := range slugs {
 		if _, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET updated_at=? WHERE slug=?`, formatTime(time.Now()), slug); err != nil {

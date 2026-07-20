@@ -1,4 +1,4 @@
-// Package subscription renders standard and compatibility subscriptions.
+// Package subscription renders OLCRTC Client subscriptions.
 package subscription
 
 import (
@@ -25,6 +25,7 @@ type Service struct {
 	instances *instance.Manager
 	secrets   *security.Secrets
 	mu        sync.RWMutex
+	mirrorMu  sync.Mutex
 	baseURL   string
 }
 
@@ -40,7 +41,7 @@ func (s *Service) SetBaseURL(value string) {
 	s.mu.Unlock()
 }
 
-// Standard renders docs/sub.md and returns aggregate traffic.
+// Standard renders the OLCRTC Client feed and returns aggregate traffic.
 func (s *Service) Standard(ctx context.Context, slug string) (string, model.Subscription, error) {
 	sub, err := s.store.Subscription(ctx, slug)
 	if err != nil {
@@ -78,7 +79,7 @@ func (s *Service) Standard(ctx context.Context, slug string) (string, model.Subs
 		if !entry.Enabled {
 			continue
 		}
-		uri, source, err := s.resolveEntry(ctx, entry, "standard")
+		uri, source, err := s.resolveEntry(ctx, entry)
 		if err != nil {
 			return "", sub, err
 		}
@@ -89,38 +90,37 @@ func (s *Service) Standard(ctx context.Context, slug string) (string, model.Subs
 	return strings.TrimSpace(strings.Join(lines, "\n")) + "\n", sub, nil
 }
 
-// Exclave renders one compatibility URI per line.
-func (s *Service) Exclave(ctx context.Context, slug string) (string, model.Subscription, error) {
-	sub, err := s.store.Subscription(ctx, slug)
-	if err != nil {
-		return "", model.Subscription{}, err
-	}
-	if !sub.Enabled {
-		return "", sub, ErrDisabled
-	}
-	lines := make([]string, 0, len(sub.Entries))
-	for _, entry := range sub.Entries {
-		if !entry.Enabled || (entry.SourceInstanceID == nil && !entry.ExclaveCompatible) {
-			continue
-		}
-		uri, _, err := s.resolveEntry(ctx, entry, "exclave")
-		if err != nil {
-			return "", sub, err
-		}
-		lines = append(lines, uri)
-	}
-	return strings.Join(lines, "\n") + "\n", sub, nil
+type bundleMirror struct {
+	Type      string `json:"t"`
+	URL       string `json:"u"`
+	Encrypted bool   `json:"e"`
+	Algorithm string `json:"a"`
 }
 
-// Bundle returns the compatibility QR JSON without leaking server-only tokens.
+type clientBundle struct {
+	Type                    string         `json:"type"`
+	Version                 int            `json:"v"`
+	Name                    string         `json:"n"`
+	Slug                    string         `json:"s"`
+	URL                     string         `json:"u"`
+	Mirrors                 []bundleMirror `json:"m"`
+	MirrorKey               string         `json:"mk"`
+	UpdateWhenConnectedOnly bool           `json:"uc"`
+	Deduplication           bool           `json:"d"`
+}
+
+// Bundle returns the compact OLCRTC Client subscription QR JSON.
 func (s *Service) Bundle(ctx context.Context, slug string) ([]byte, error) {
 	sub, err := s.store.Subscription(ctx, slug)
 	if err != nil {
 		return nil, err
 	}
+	if !sub.Enabled {
+		return nil, ErrDisabled
+	}
 	key := ""
-	mirrors := make([]map[string]any, 0, 1)
-	if sub.MirrorEnabled {
+	mirrors := make([]bundleMirror, 0, 1)
+	if sub.MirrorEnabled && sub.MirrorPublicURL != "" {
 		encryptedKey, err := s.store.SubscriptionMirrorKey(ctx, sub.ID)
 		if err != nil {
 			return nil, err
@@ -130,19 +130,19 @@ func (s *Service) Bundle(ctx context.Context, slug string) ([]byte, error) {
 			return nil, err
 		}
 		key = plainKey
-		if sub.MirrorPublicURL != "" {
-			mirrors = append(mirrors, map[string]any{"t": "yandex_disk", "u": sub.MirrorPublicURL, "e": true, "a": "AES-256-GCM"})
-		}
+		mirrors = append(mirrors, bundleMirror{Type: "yandex_disk", URL: sub.MirrorPublicURL, Encrypted: true, Algorithm: "AES-256-GCM"})
 	}
 	s.mu.RLock()
 	baseURL := s.baseURL
 	s.mu.RUnlock()
-	bundle := map[string]any{"type": "olcrtc-sub", "v": 2, "n": sub.Name, "s": sub.Slug, "u": baseURL + "/sub/" + sub.Slug + "/exclave", "m": mirrors, "mk": key, "uc": true, "d": true}
+	bundle := clientBundle{Type: "olcrtc-sub", Version: 2, Name: sub.Name, Slug: sub.Slug, URL: baseURL + "/sub/" + sub.Slug, Mirrors: mirrors, MirrorKey: key, UpdateWhenConnectedOnly: false, Deduplication: true}
 	return json.Marshal(bundle)
 }
 
-// SyncMirror encrypts and uploads the legacy projection.
+// SyncMirror encrypts and uploads the OLCRTC Client subscription feed.
 func (s *Service) SyncMirror(ctx context.Context, slug string) (string, error) {
+	s.mirrorMu.Lock()
+	defer s.mirrorMu.Unlock()
 	enabled, err := s.store.SettingOrDefault(ctx, "yandex_enabled", "false")
 	if err != nil || enabled != "true" {
 		return "", errors.New("yandex mirror is disabled globally")
@@ -154,7 +154,7 @@ func (s *Service) SyncMirror(ctx context.Context, slug string) (string, error) {
 	if !sub.MirrorEnabled {
 		return "", errors.New("mirror is disabled for this subscription")
 	}
-	legacy, _, err := s.Exclave(ctx, slug)
+	feed, _, err := s.Standard(ctx, slug)
 	if err != nil {
 		return "", err
 	}
@@ -170,23 +170,14 @@ func (s *Service) SyncMirror(ctx context.Context, slug string) (string, error) {
 	if err != nil {
 		return "", errors.New("invalid stored mirror key")
 	}
-	payload, err := mirror.Encrypt(key, []byte(legacy))
+	payload, err := mirror.Encrypt(key, []byte(feed))
 	if err != nil {
 		return "", err
 	}
-	tokenEncrypted, _, err := s.store.Setting(ctx, "yandex_oauth_token")
-	if err != nil {
-		return "", errors.New("yandex OAuth token is not configured")
-	}
-	token, err := s.secrets.Decrypt(tokenEncrypted)
+	client, err := s.mirrorClient(ctx)
 	if err != nil {
 		return "", err
 	}
-	basePath, err := s.store.SettingOrDefault(ctx, "yandex_base_path", "/olcrtc/subscriptions")
-	if err != nil {
-		return "", err
-	}
-	client := mirror.NewClient(token, basePath)
 	publicURL, err := client.Upload(ctx, slug, payload)
 	if err != nil {
 		_ = s.store.SetSubscriptionMirror(ctx, sub.ID, sub.MirrorPublicURL, "error")
@@ -196,6 +187,46 @@ func (s *Service) SyncMirror(ctx context.Context, slug string) (string, error) {
 		return "", err
 	}
 	return publicURL, nil
+}
+
+// Delete removes a remote mirror first and only then deletes local state.
+func (s *Service) Delete(ctx context.Context, slug string) error {
+	s.mirrorMu.Lock()
+	defer s.mirrorMu.Unlock()
+	sub, err := s.store.Subscription(ctx, slug)
+	if err != nil {
+		return err
+	}
+	mirrorMayExist := sub.MirrorEnabled || sub.MirrorPublicURL != "" || (sub.MirrorStatus != "" && sub.MirrorStatus != "disabled")
+	if mirrorMayExist {
+		client, err := s.mirrorClient(ctx)
+		if err != nil {
+			return fmt.Errorf("mirror cleanup unavailable: %w", err)
+		}
+		if err := client.Delete(ctx, slug); err != nil {
+			return fmt.Errorf("mirror cleanup failed: %w", err)
+		}
+	}
+	return s.store.DeleteSubscription(ctx, slug)
+}
+
+func (s *Service) mirrorClient(ctx context.Context) (*mirror.Client, error) {
+	tokenEncrypted, _, err := s.store.Setting(ctx, "yandex_oauth_token")
+	if err != nil {
+		return nil, errors.New("yandex OAuth token is not configured")
+	}
+	token, err := s.secrets.Decrypt(tokenEncrypted)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil, errors.New("yandex OAuth token is not configured")
+	}
+	basePath, err := s.store.SettingOrDefault(ctx, "yandex_base_path", "/olcrtc/subscriptions")
+	if err != nil {
+		return nil, err
+	}
+	return mirror.NewClient(token, basePath), nil
 }
 
 // GenerateMirrorKey creates and encrypts a per-subscription key.
@@ -209,11 +240,11 @@ func (s *Service) GenerateMirrorKey() (string, string, error) {
 	return plain, encrypted, err
 }
 
-func (s *Service) resolveEntry(ctx context.Context, entry model.SubscriptionEntry, format string) (string, *model.Instance, error) {
+func (s *Service) resolveEntry(ctx context.Context, entry model.SubscriptionEntry) (string, *model.Instance, error) {
 	if entry.SourceInstanceID == nil {
 		return entry.RawURI, nil, nil
 	}
-	uri, err := s.instances.URI(ctx, *entry.SourceInstanceID, format)
+	uri, err := s.instances.URI(ctx, *entry.SourceInstanceID, "client")
 	if err != nil {
 		return "", nil, err
 	}
@@ -335,7 +366,7 @@ func humanBytes(value int64) string {
 	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", n), "0"), ".") + units[unit]
 }
 
-// TrafficHeader returns the optional standard Subscription-Userinfo value.
+// TrafficHeader returns the optional Subscription-Userinfo value.
 func TrafficHeader(sub model.Subscription) string {
 	total := int64(0)
 	if sub.AvailableBytes != nil {

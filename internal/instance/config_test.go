@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 
@@ -48,15 +49,44 @@ func TestURIRejectsReservedSeparator(t *testing.T) {
 	}
 }
 
-func TestExclaveURINeverContainsToken(t *testing.T) {
+func TestClientURIContainsCompleteWBToken(t *testing.T) {
 	item := validInstance()
-	item.AuthToken = "secret-bearer"
-	got, err := ExclaveURI(item, strings.Repeat("c", 64), "node")
+	item.Provider = "wbstream"
+	item.Transport = "vp8channel"
+	item.RoomID = "11111111-2222-4333-8444-555555555555"
+	item.ClientID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	item.AuthToken = strings.Repeat("header.payload.signature+", 80)
+	got, err := ClientURI(item, strings.Repeat("c", 64), "node")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(got, "secret-bearer") || strings.Contains(got, "auth_token") || strings.Contains(got, "client_id") {
-		t.Fatalf("secret leaked: %s", got)
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Query().Get("a") != item.AuthToken {
+		t.Fatalf("auth token was changed or truncated: got %d bytes, want %d", len(parsed.Query().Get("a")), len(item.AuthToken))
+	}
+	if parsed.Query().Get("c") != item.ClientID || parsed.Query().Get("k") != strings.Repeat("c", 64) {
+		t.Fatalf("required client parameters missing: %s", got)
+	}
+}
+
+func TestValidateClientURICompatibility(t *testing.T) {
+	key := strings.Repeat("a", 64)
+	valid := "olcrtc://jitsi@r/https%3A%2F%2Fmeet.example%2Froom?k=" + key + "&t=datachannel&c=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	if err := ValidateClientURI(valid); err != nil {
+		t.Fatalf("valid client URI rejected: %v", err)
+	}
+	for _, invalid := range []string{
+		"olcrtc://jitsi?datachannel@room#" + key + "$name",
+		"olcrtc://jitsi@r/room?k=" + key + "&t=vp8channel&c=id",
+		"olcrtc://jitsi@r/room?k=" + key + "&t=datachannel&c=id&a=one&auth_token=two",
+		"olcrtc://jitsi@r/room?k=" + key + "&t=datachannel&c=id&ka=3601",
+	} {
+		if err := ValidateClientURI(invalid); err == nil {
+			t.Fatalf("invalid client URI accepted: %s", invalid)
+		}
 	}
 }
 

@@ -10,11 +10,11 @@
 - private CA и HTTPS по IP без домена и HTTP fallback;
 - CRUD, start/stop/restart, атомарный rollback YAML, key rotation и Room ID;
 - `jitsi`, `telemost`, `wbstream` и четыре официальных transport;
-- standard URI/subscription по `docs/uri.md` и `docs/sub.md` upstream;
-- отдельная Exclave-compatible проекция и QR;
+- отдельные QR OLCBOX и QR OLCRTC Client для совместимых инстансов;
+- OLCRTC Client subscriptions с compact JSON QR и encrypted Yandex fallback;
 - exact payload traffic из journald с дедупликацией по cursor;
 - AES-256-GCM Yandex Disk mirror;
-- опциональный Playwright/Chromium/noVNC workflow для WB Stream на `linux/amd64`;
+- опциональный Playwright/Chromium/noVNC workflow create/refresh для WB Stream на `linux/amd64` с контролем срока JWT;
 - backup, manual update и rollback проверенных release bundles;
 - тёмная и светлая адаптивные темы без CDN/runtime Node.js.
 
