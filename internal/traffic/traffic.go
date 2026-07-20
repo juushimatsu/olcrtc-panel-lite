@@ -17,7 +17,7 @@ import (
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/store"
 )
 
-var trafficPattern = regexp.MustCompile(`^traffic: session=([^\s]+) addr=([^\s]+) in=([0-9]+) out=([0-9]+)$`)
+var trafficPattern = regexp.MustCompile(`^(?:(?:[0-9]{4}/[0-9]{2}/[0-9]{2} )?[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)? )?traffic: session=([^\s]+) addr=([^\s]+) in=([0-9]+) out=([0-9]+)$`)
 var unitPattern = regexp.MustCompile(`^olcrtc-instance@([0-9]+)\.service$`)
 
 // Event is one exact closed-stream payload event.

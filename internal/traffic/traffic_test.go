@@ -14,9 +14,33 @@ func TestParse(t *testing.T) {
 		t.Fatalf("event=%#v", event)
 	}
 }
+
+func TestParseAcceptsStandardGoLogPrefix(t *testing.T) {
+	event, err := Parse("2026/07/20 15:42:19 traffic: session=abc addr=1.1.1.1:443 in=120 out=340")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.SessionID != "abc" || event.Target != "1.1.1.1:443" || event.Upload != 120 || event.Download != 340 {
+		t.Fatalf("event=%#v", event)
+	}
+}
+
+func TestParseAcceptsGoLogTimeWithMicroseconds(t *testing.T) {
+	event, err := Parse("15:42:19.123456 traffic: session=abc addr=[2001:db8::1]:443 in=7 out=9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Target != "[2001:db8::1]:443" || event.Upload != 7 || event.Download != 9 {
+		t.Fatalf("event=%#v", event)
+	}
+}
+
 func TestParseRejectsNoise(t *testing.T) {
 	if _, err := Parse("token=secret"); err == nil {
 		t.Fatal("noise accepted")
+	}
+	if _, err := Parse("untrusted prefix traffic: session=abc addr=target:443 in=1 out=2"); err == nil {
+		t.Fatal("arbitrary prefix accepted")
 	}
 }
 

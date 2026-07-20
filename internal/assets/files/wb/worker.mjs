@@ -66,10 +66,10 @@ async function main() {
     args: ['--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--window-size=1280,800'],
   });
   activeContext = context;
-  context.on('request', async request => {
+  context.on('request', request => {
     try {
       if (!isWBURL(request.url())) return;
-      const authorization = await request.headerValue('authorization') || '';
+      const authorization = request.headers()['authorization'] || '';
       if (/^Bearer\s+\S+/i.test(authorization)) accountToken = authorization.replace(/^Bearer\s+/i, '').trim();
       if (/room|meeting/i.test(request.url())) roomID ||= findRoomID(request.url());
     } catch { /* Ignore malformed third-party requests. */ }

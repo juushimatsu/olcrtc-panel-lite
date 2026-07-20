@@ -55,7 +55,7 @@ func TestWBWorkerLoadsPinnedPlaywrightAndReadsAuthorization(t *testing.T) {
 	source := string(b)
 	for _, required := range []string{
 		"require('/opt/olcrtc-panel/wb/node_modules/playwright')",
-		"request.headerValue('authorization')",
+		"request.headers()['authorization']",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("worker is missing %q", required)
@@ -63,6 +63,9 @@ func TestWBWorkerLoadsPinnedPlaywrightAndReadsAuthorization(t *testing.T) {
 	}
 	if strings.Contains(source, "from 'playwright'") {
 		t.Fatal("worker uses bare Playwright import outside its node_modules tree")
+	}
+	if strings.Contains(source, "request.headerValue('authorization')") {
+		t.Fatal("worker uses asynchronous header lookup inside an unawaited Playwright event callback")
 	}
 }
 
