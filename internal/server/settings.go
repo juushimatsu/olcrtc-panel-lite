@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -27,11 +28,24 @@ import (
 var bundlePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 const (
-	wbNoVNCAddress = "127.0.0.1:6080"
-	wbNoVNCURL     = "/wb/novnc/vnc.html?autoconnect=true&resize=scale&path=wb/novnc/websockify"
+	wbNoVNCAddress   = "127.0.0.1:6080"
+	wbNoVNCURL       = "/wb/novnc/vnc.html?autoconnect=true&resize=scale&path=wb/novnc/websockify"
+	wbInstallDir     = "/opt/olcrtc-panel/wb"
+	wbRuntimeDir     = "/run/olcrtc-wb"
+	wbProfileDir     = "/var/lib/olcrtc-wb/profile"
+	wbSessionService = "olcrtc-wb-session.service"
+	wbJobPath        = wbRuntimeDir + "/job.json"
+	wbStatePath      = wbRuntimeDir + "/state.json"
+	wbControlPath    = wbRuntimeDir + "/control.json"
 )
 
 var wbSessionStateMu sync.Mutex
+
+var wbSessionMonitor = struct {
+	sync.Mutex
+	generation uint64
+	cancel     context.CancelFunc
+}{}
 
 func (s *Server) routesSettings(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/settings", s.requireAuth(http.HandlerFunc(s.handleSettingsGet)))
@@ -227,7 +241,7 @@ func (s *Server) handleWBSettingsPut(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 	wbSessionStateMu.Lock()
 	defer wbSessionStateMu.Unlock()
-	if runtime.GOOS != "linux" || !wbStatus()["installed"].(bool) || !wbRuntimeReady() {
+	if runtime.GOOS != "linux" || !wbStatus()["installed"].(bool) {
 		writeError(w, r, http.StatusUnprocessableEntity, "wb_not_installed", "WB components установлены не полностью. Переустановите их в настройках")
 		return
 	}
@@ -244,40 +258,62 @@ func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if current, _ := s.store.SettingOrDefault(r.Context(), "wb_session_expires", ""); current != "" {
-		if deadline, err := time.Parse(time.RFC3339, current); err == nil && time.Now().Before(deadline) && exec.CommandContext(r.Context(), "systemctl", "is-active", "--quiet", "olcrtc-wb-session.service").Run() == nil {
+		if deadline, err := time.Parse(time.RFC3339, current); err == nil && time.Now().Before(deadline) && exec.CommandContext(r.Context(), "systemctl", "is-active", "--quiet", wbSessionService).Run() == nil {
 			writeError(w, r, http.StatusConflict, "wb_session_active", "WB browser session уже активна")
 			return
 		}
 	}
+	stopWBSessionMonitor()
+	_ = exec.CommandContext(r.Context(), "systemctl", "stop", wbSessionService).Run()
+	_ = exec.CommandContext(r.Context(), "systemctl", "reset-failed", wbSessionService).Run()
+	cleanupWBWorkerFiles()
+	if err := refreshWBAutomationRuntimeAssets(r.Context()); err != nil {
+		s.logger.Error("refresh WB automation runtime", "error", err)
+		writeError(w, r, http.StatusInternalServerError, "wb_runtime_refresh_failed", "Не удалось обновить WB automation из текущей версии панели")
+		return
+	}
+	if !wbRuntimeReady() {
+		writeError(w, r, http.StatusUnprocessableEntity, "wb_not_installed", "WB components установлены не полностью. Переустановите их в настройках")
+		return
+	}
+	if err := prepareWBProfile(); err != nil {
+		s.logger.Error("prepare WB profile", "error", err)
+		writeError(w, r, http.StatusInternalServerError, "wb_profile_failed", "Не удалось подготовить постоянный Chromium profile")
+		return
+	}
+	if err := ensureWBRuntimeDir(); err != nil {
+		s.logger.Error("prepare WB runtime", "error", err)
+		writeError(w, r, http.StatusInternalServerError, "wb_runtime_failed", "Не удалось подготовить WB runtime directory")
+		return
+	}
 	if err := s.writeWBJob(r.Context(), expires, input.Action); err != nil {
+		s.logger.Error("prepare WB job", "error", err)
 		writeError(w, r, http.StatusInternalServerError, "wb_job_failed", "Не удалось подготовить WB job")
 		return
 	}
-	_ = os.Remove("/var/lib/olcrtc-wb/state.json")
-	_ = exec.CommandContext(r.Context(), "systemctl", "reset-failed", "olcrtc-wb-session.service").Run()
-	output, err := exec.CommandContext(r.Context(), "systemctl", "restart", "olcrtc-wb-session.service").CombinedOutput()
+	output, err := exec.CommandContext(r.Context(), "systemctl", "start", wbSessionService).CombinedOutput()
 	if err == nil {
 		err = waitForTCPStable(r.Context(), wbNoVNCAddress, 15*time.Second, time.Second)
 	}
 	if err == nil {
-		err = exec.CommandContext(r.Context(), "systemctl", "is-active", "--quiet", "olcrtc-wb-session.service").Run()
+		err = exec.CommandContext(r.Context(), "systemctl", "is-active", "--quiet", wbSessionService).Run()
 	}
 	if err != nil {
-		statusOutput, _ := exec.CommandContext(r.Context(), "systemctl", "--no-pager", "--full", "status", "olcrtc-wb-session.service").CombinedOutput()
+		statusOutput, _ := exec.CommandContext(r.Context(), "systemctl", "--no-pager", "--full", "status", wbSessionService).CombinedOutput()
 		s.logger.Error("wb session failed to start", "error", err, "output", redact.Text(truncate(string(output)+"\n"+string(statusOutput), 8000)))
 		audit(s, r, "wb.session_start", "wb", "session", "failed", "service or noVNC did not become ready")
+		cleanupWBWorkerFiles()
 		writeError(w, r, http.StatusBadGateway, "wb_session_start_failed", "WB browser session не запустилась. Проверьте journalctl для olcrtc-wb-session.service")
 		return
 	}
 	_ = s.store.SetSetting(r.Context(), "wb_session_expires", expires.Format(time.RFC3339), false)
 	_ = s.store.SetSetting(r.Context(), "wb_session_extended", "false", false)
+	s.startWBSessionMonitor()
 	audit(s, r, "wb.session_start", "wb", "session", "success", "action="+input.Action)
 	writeJSON(w, http.StatusCreated, map[string]any{"active": true, "action": input.Action, "expires_at": expires, "novnc_url": wbNoVNCURL})
 }
 
 func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
-	wbSessionStateMu.Lock()
-	defer wbSessionStateMu.Unlock()
 	expires, _ := s.store.SettingOrDefault(r.Context(), "wb_session_expires", "")
 	extended, _ := s.store.SettingOrDefault(r.Context(), "wb_session_extended", "false")
 	active := false
@@ -285,7 +321,7 @@ func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
 		active = time.Now().Before(t)
 	}
 	if active && runtime.GOOS == "linux" {
-		active = exec.CommandContext(r.Context(), "systemctl", "is-active", "--quiet", "olcrtc-wb-session.service").Run() == nil
+		active = exec.CommandContext(r.Context(), "systemctl", "is-active", "--quiet", wbSessionService).Run() == nil
 		if active {
 			connection, err := net.DialTimeout("tcp", wbNoVNCAddress, 250*time.Millisecond)
 			active = err == nil
@@ -294,29 +330,16 @@ func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	statePayload := map[string]any{}
-	if b, err := os.ReadFile("/var/lib/olcrtc-wb/state.json"); err == nil {
-		_ = json.Unmarshal(b, &statePayload)
-		if token, ok := statePayload["token"].(string); ok && token != "" {
-			expiresAt, saveErr := s.saveWBToken(r.Context(), token, statePayload["token_expires_at"])
-			if saveErr == nil {
-				result := s.instances.UpdateWBToken(r.Context(), token)
-				statePayload["applied"] = result
-				s.syncWBTokenSubscriptions(r.Context(), result)
-				if expiresAt != nil {
-					statePayload["token_expires_at"] = expiresAt.Format(time.RFC3339)
-				}
-				audit(s, r, "wb.token_playwright", "wb", "token", "success", "token applied best-effort to WB instances")
-			} else {
-				statePayload["phase"] = "error"
-				statePayload["message"] = "Token получен, но не удалось безопасно сохранить"
-				audit(s, r, "wb.token_playwright", "wb", "token", "failed", "token persistence failed")
-			}
-			delete(statePayload, "token")
-			if clean, marshalErr := json.Marshal(statePayload); marshalErr == nil {
-				_ = writePrivateFile("/var/lib/olcrtc-wb/state.json", clean)
-			}
-		}
+	statePayload := readWBSessionStateForResponse()
+	applied := false
+	if !wbSessionMonitorRunning() {
+		statePayload, applied = s.consumeWBSessionState(r.Context())
+	}
+	if applied {
+		audit(s, r, "wb.token_playwright", "wb", "token", "success", "token applied automatically by WB session monitor")
+	}
+	if phase, _ := statePayload["phase"].(string); phase == "applying" {
+		active = true
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"active": active, "expires_at": expires, "extended": extended == "true", "novnc_url": wbNoVNCURL, "state": statePayload})
 }
@@ -334,17 +357,25 @@ func (s *Server) handleWBSessionExtend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expires = expires.Add(15 * time.Minute)
+	if err := writeWBWorkerJSON(wbControlPath, map[string]int64{"deadline_unix": expires.Unix()}); err != nil {
+		writeError(w, r, http.StatusInternalServerError, "wb_extend_failed", "Не удалось продлить deadline WB worker")
+		return
+	}
 	_ = s.store.SetSetting(r.Context(), "wb_session_expires", expires.Format(time.RFC3339), false)
 	_ = s.store.SetSetting(r.Context(), "wb_session_extended", "true", false)
 	writeJSON(w, http.StatusOK, map[string]any{"active": true, "expires_at": expires, "extended": true})
 }
 
 func (s *Server) handleWBSessionStop(w http.ResponseWriter, r *http.Request) {
+	stopWBSessionMonitor()
 	_ = s.store.DeleteSetting(r.Context(), "wb_session_expires")
 	_ = s.store.DeleteSetting(r.Context(), "wb_session_extended")
 	if runtime.GOOS == "linux" {
-		_ = exec.CommandContext(r.Context(), "systemctl", "stop", "olcrtc-wb-session.service").Run()
+		_ = exec.CommandContext(r.Context(), "systemctl", "stop", wbSessionService).Run()
 	}
+	wbSessionStateMu.Lock()
+	cleanupWBWorkerFiles()
+	wbSessionStateMu.Unlock()
 	audit(s, r, "wb.session_stop", "wb", "session", "success", "")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -582,9 +613,6 @@ func (s *Server) syncWBTokenSubscriptions(ctx context.Context, result map[string
 }
 
 func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action string) error {
-	if err := os.MkdirAll("/var/lib/olcrtc-wb/profile", 0o700); err != nil {
-		return err
-	}
 	mode, _ := s.store.SettingOrDefault(ctx, "wb_proxy_mode", "direct")
 	address, _ := s.store.SettingOrDefault(ctx, "wb_proxy_address", "")
 	password := ""
@@ -605,24 +633,222 @@ func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action strin
 			}
 		}
 	}
-	job := map[string]any{"action": action, "home_url": "https://stream.wb.ru", "existing_room_id": existingRoomID, "profile_dir": "/var/lib/olcrtc-wb/profile", "state_file": "/var/lib/olcrtc-wb/state.json", "control_file": "/var/lib/olcrtc-wb/control.json", "deadline_unix": expires.Unix(), "proxy": proxy}
-	b, err := json.Marshal(job)
+	job := map[string]any{"action": action, "home_url": "https://stream.wb.ru", "existing_room_id": existingRoomID, "profile_dir": wbProfileDir, "state_file": wbStatePath, "control_file": wbControlPath, "deadline_unix": expires.Unix(), "proxy": proxy}
+	if err := writeWBWorkerJSON(wbJobPath, job); err != nil {
+		return err
+	}
+	if err := writeWBWorkerJSON(wbControlPath, map[string]int64{"deadline_unix": expires.Unix()}); err != nil {
+		return err
+	}
+	return writeWBWorkerJSON(wbStatePath, map[string]any{"phase": "queued", "message": "Запуск Chromium...", "percent": 1, "updated_at": time.Now().Unix()})
+}
+
+func refreshWBAutomationRuntimeAssets(ctx context.Context) error {
+	_ = exec.CommandContext(ctx, "systemctl", "stop", "olcrtc-wb-runtime-refresh.service").Run()
+	_ = exec.CommandContext(ctx, "systemctl", "reset-failed", "olcrtc-wb-runtime-refresh.service").Run()
+	output, err := exec.CommandContext(ctx, "systemd-run", "--quiet", "--wait", "--pipe", "--collect",
+		"--unit=olcrtc-wb-runtime-refresh", "/usr/local/bin/olcrtc-panel", "assets", "refresh-wb", "--root", "/").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("refresh WB automation runtime: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	output, err = exec.CommandContext(ctx, "systemctl", "daemon-reload").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("reload WB automation service: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func prepareWBProfile() error {
+	command := exec.Command("install", "-d", "-m", "0700", "-o", "olcrtc-wb", "-g", "olcrtc-wb", wbProfileDir)
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("prepare WB profile: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func ensureWBRuntimeDir() error {
+	command := exec.Command("install", "-d", "-m", "0750", "-o", "olcrtc-wb", "-g", "olcrtc-wb", wbRuntimeDir)
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("prepare WB runtime: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func (s *Server) startWBSessionMonitor() {
+	ctx, cancel := context.WithCancel(context.Background())
+	wbSessionMonitor.Lock()
+	previous := wbSessionMonitor.cancel
+	wbSessionMonitor.generation++
+	generation := wbSessionMonitor.generation
+	wbSessionMonitor.cancel = cancel
+	wbSessionMonitor.Unlock()
+	if previous != nil {
+		previous()
+	}
+	go s.monitorWBSession(ctx, generation)
+}
+
+func stopWBSessionMonitor() {
+	wbSessionMonitor.Lock()
+	wbSessionMonitor.generation++
+	cancel := wbSessionMonitor.cancel
+	wbSessionMonitor.cancel = nil
+	wbSessionMonitor.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func wbSessionMonitorRunning() bool {
+	wbSessionMonitor.Lock()
+	defer wbSessionMonitor.Unlock()
+	return wbSessionMonitor.cancel != nil
+}
+
+func (s *Server) monitorWBSession(ctx context.Context, generation uint64) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	defer func() {
+		wbSessionMonitor.Lock()
+		current := wbSessionMonitor.generation == generation
+		if current {
+			wbSessionMonitor.cancel = nil
+		}
+		wbSessionMonitor.Unlock()
+		if current {
+			cleanupWBJobFiles()
+		}
+	}()
+	for {
+		state, applied := s.consumeWBSessionState(ctx)
+		if applied {
+			s.logger.Info("WB token captured and applied automatically")
+		}
+		phase, _ := state["phase"].(string)
+		if phase == "success" || phase == "error" {
+			return
+		}
+		expiresRaw, _ := s.store.SettingOrDefault(ctx, "wb_session_expires", "")
+		if expires, err := time.Parse(time.RFC3339, expiresRaw); err == nil && !expires.After(time.Now()) {
+			_ = exec.CommandContext(context.Background(), "systemctl", "stop", wbSessionService).Run()
+			wbSessionStateMu.Lock()
+			_ = writeWBWorkerJSON(wbStatePath, map[string]any{
+				"phase": "error", "message": "Время авторизации истекло", "percent": 0, "updated_at": time.Now().Unix(),
+			})
+			wbSessionStateMu.Unlock()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) consumeWBSessionState(ctx context.Context) (map[string]any, bool) {
+	wbSessionStateMu.Lock()
+	state := map[string]any{}
+	data, err := os.ReadFile(wbStatePath)
+	if err != nil || json.Unmarshal(data, &state) != nil {
+		wbSessionStateMu.Unlock()
+		return state, false
+	}
+	token, _ := state["token"].(string)
+	if token == "" {
+		wbSessionStateMu.Unlock()
+		return state, false
+	}
+	expiresAt, err := s.saveWBToken(ctx, token, state["token_expires_at"])
+	if err != nil {
+		state["phase"] = "error"
+		state["message"] = "Token получен, но не удалось безопасно сохранить"
+		state["percent"] = 0
+		delete(state, "token")
+		_ = writeWBWorkerJSON(wbStatePath, state)
+		wbSessionStateMu.Unlock()
+		s.logger.Error("save Playwright WB token", "error", err)
+		return state, false
+	}
+	state["phase"] = "applying"
+	state["message"] = "Применение данных WB Stream..."
+	state["percent"] = 95
+	if expiresAt != nil {
+		state["token_expires_at"] = expiresAt.Format(time.RFC3339)
+	}
+	delete(state, "token")
+	if err := writeWBWorkerJSON(wbStatePath, state); err != nil {
+		wbSessionStateMu.Unlock()
+		s.logger.Error("secure WB worker state before apply", "error", err)
+		return state, false
+	}
+	wbSessionStateMu.Unlock()
+
+	result := s.instances.UpdateWBToken(ctx, token)
+	s.syncWBTokenSubscriptions(ctx, result)
+	state["phase"] = "success"
+	state["message"] = "Данные WB Stream получены и применены"
+	state["percent"] = 100
+	state["applied"] = result
+	wbSessionStateMu.Lock()
+	current := map[string]any{}
+	data, readErr := os.ReadFile(wbStatePath)
+	if readErr != nil || json.Unmarshal(data, &current) != nil || current["phase"] != "applying" {
+		wbSessionStateMu.Unlock()
+		return state, true
+	}
+	if err := writeWBWorkerJSON(wbStatePath, state); err != nil {
+		s.logger.Error("remove WB token from worker state", "error", err)
+	}
+	wbSessionStateMu.Unlock()
+	return state, true
+}
+
+func readWBSessionStateForResponse() map[string]any {
+	wbSessionStateMu.Lock()
+	defer wbSessionStateMu.Unlock()
+	state := map[string]any{}
+	data, err := os.ReadFile(wbStatePath)
+	if err != nil || json.Unmarshal(data, &state) != nil {
+		return state
+	}
+	return sanitizeWBSessionStateForResponse(state)
+}
+
+func sanitizeWBSessionStateForResponse(state map[string]any) map[string]any {
+	if token, _ := state["token"].(string); token != "" {
+		delete(state, "token")
+		state["phase"] = "applying"
+		state["message"] = "Применение данных WB Stream..."
+		state["percent"] = 95
+	}
+	return state
+}
+
+func cleanupWBJobFiles() {
+	_ = os.Remove(wbJobPath)
+	_ = os.Remove(wbControlPath)
+}
+
+func cleanupWBWorkerFiles() {
+	cleanupWBJobFiles()
+	_ = os.Remove(wbStatePath)
+}
+
+func writeWBWorkerJSON(path string, value any) error {
+	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	if err := writePrivateFile("/var/lib/olcrtc-wb/job.json", b); err != nil {
-		return err
-	}
-	control, _ := json.Marshal(map[string]int64{"deadline_unix": expires.Unix()})
-	return writePrivateFile("/var/lib/olcrtc-wb/control.json", control)
+	return writePrivateFile(path, append(data, '\n'))
 }
 
 func wbRuntimeReady() bool {
 	for _, path := range []string{
-		"/opt/olcrtc-panel/wb/node/bin/node",
-		"/opt/olcrtc-panel/wb/node_modules/playwright/package.json",
-		"/opt/olcrtc-panel/wb/node_modules/playwright-core/package.json",
-		"/opt/olcrtc-panel/wb/worker.mjs",
+		wbInstallDir + "/node/bin/node",
+		wbInstallDir + "/node_modules/playwright/package.json",
+		wbInstallDir + "/node_modules/playwright-core/package.json",
+		wbInstallDir + "/worker.mjs",
 		"/usr/lib/olcrtc-panel/wb/run-session.sh",
 		"/usr/lib/olcrtc-panel/wb/worker.mjs",
 	} {
@@ -630,7 +856,7 @@ func wbRuntimeReady() bool {
 			return false
 		}
 	}
-	browsers, _ := filepath.Glob("/opt/olcrtc-panel/wb/browsers/chromium-*/chrome-linux*/chrome")
+	browsers, _ := filepath.Glob(wbInstallDir + "/browsers/chromium-*/chrome-linux*/chrome")
 	return len(browsers) > 0
 }
 
@@ -668,17 +894,45 @@ func waitForTCPStable(ctx context.Context, address string, timeout, stableFor ti
 }
 
 func writePrivateFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o750); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	account, err := user.Lookup("olcrtc-wb")
+	if err != nil {
 		return err
 	}
-	if account, err := user.Lookup("olcrtc-wb"); err == nil {
-		uid, _ := strconv.Atoi(account.Uid)
-		gid, _ := strconv.Atoi(account.Gid)
-		_ = os.Chown(tmp, uid, gid)
+	uid, err := strconv.Atoi(account.Uid)
+	if err != nil {
+		return err
 	}
-	return os.Rename(tmp, path)
+	gid, err := strconv.Atoi(account.Gid)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(directory, ".wb-worker-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chown(tmpPath, uid, gid); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }

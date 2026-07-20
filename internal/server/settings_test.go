@@ -63,3 +63,15 @@ func TestOperationProgressIgnoresStaleStateForNewRun(t *testing.T) {
 		t.Fatalf("stale state affected new operation: %#v", progress)
 	}
 }
+
+func TestSanitizeWBSessionStateNeverReturnsCapturedToken(t *testing.T) {
+	state := sanitizeWBSessionStateForResponse(map[string]any{
+		"phase": "success", "message": "captured", "percent": 100, "token": "secret-bearer",
+	})
+	if _, exists := state["token"]; exists {
+		t.Fatal("captured WB token was returned in session state")
+	}
+	if state["phase"] != "applying" || state["percent"] != 95 {
+		t.Fatalf("state was not held in applying phase: %#v", state)
+	}
+}

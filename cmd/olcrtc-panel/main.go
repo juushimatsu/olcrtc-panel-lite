@@ -67,15 +67,23 @@ func run(args []string) error {
 }
 
 func installAssets(args []string) error {
-	if len(args) == 0 || args[0] != "install" {
-		return errors.New("assets action must be install")
+	if len(args) == 0 {
+		return errors.New("assets action must be install or refresh-wb")
 	}
-	flags := flag.NewFlagSet("assets install", flag.ContinueOnError)
+	action := args[0]
+	flags := flag.NewFlagSet("assets "+action, flag.ContinueOnError)
 	root := flags.String("root", "/", "filesystem root")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
-	return assets.Install(*root)
+	switch action {
+	case "install":
+		return assets.Install(*root)
+	case "refresh-wb":
+		return assets.RefreshWBAutomation(*root)
+	default:
+		return errors.New("assets action must be install or refresh-wb")
+	}
 }
 
 func serve(args []string) error {

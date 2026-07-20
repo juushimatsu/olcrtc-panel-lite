@@ -93,6 +93,65 @@ func Install(root string) error {
 	return nil
 }
 
+// RefreshWBAutomation rewrites the WB worker, runner and service from the
+// current binary, then refreshes the installed worker beside Playwright. It is
+// safe to call before every browser session and keeps existing node_modules and
+// Chromium downloads intact.
+func RefreshWBAutomation(root string) error {
+	if root == "" {
+		return fmt.Errorf("asset root is empty")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	for _, source := range []string{
+		"files/systemd/olcrtc-wb-session.service",
+		"files/wb/worker.mjs",
+		"files/wb/run-session.sh",
+	} {
+		destination := destinations[source]
+		data, err := fs.ReadFile(files, source)
+		if err != nil {
+			return fmt.Errorf("read embedded WB asset %s: %w", source, err)
+		}
+		target := filepath.Join(root, filepath.FromSlash(destination.path))
+		resolved, err := filepath.Abs(target)
+		if err != nil || !pathWithinRoot(root, resolved) {
+			return fmt.Errorf("WB asset target escapes root: %s", target)
+		}
+		if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+			return err
+		}
+		if err := atomicWrite(resolved, data, destination.mode); err != nil {
+			return fmt.Errorf("refresh WB asset %s: %w", target, err)
+		}
+	}
+	runtimeDir := filepath.Join(root, filepath.FromSlash("opt/olcrtc-panel/wb"))
+	resolved, err := filepath.Abs(runtimeDir)
+	if err != nil || !pathWithinRoot(root, resolved) {
+		return fmt.Errorf("WB runtime escapes root: %s", runtimeDir)
+	}
+	info, err := os.Lstat(resolved)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect WB runtime %s: %w", runtimeDir, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WB runtime is not a real directory: %s", runtimeDir)
+	}
+	worker, err := fs.ReadFile(files, "files/wb/worker.mjs")
+	if err != nil {
+		return fmt.Errorf("read embedded WB worker: %w", err)
+	}
+	if err := atomicWrite(filepath.Join(resolved, "worker.mjs"), worker, 0o644); err != nil {
+		return fmt.Errorf("refresh WB runtime worker: %w", err)
+	}
+	return nil
+}
+
 func repairExistingWBRuntime(root string) error {
 	runtimeDir := filepath.Join(root, filepath.FromSlash("opt/olcrtc-panel/wb"))
 	resolved, err := filepath.Abs(runtimeDir)

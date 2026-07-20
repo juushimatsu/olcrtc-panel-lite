@@ -162,3 +162,66 @@ func TestWBWorkerRunsBesideInstalledPlaywright(t *testing.T) {
 		t.Fatal("WB runner does not execute the runtime worker beside Playwright")
 	}
 }
+
+func TestRefreshWBAutomationUpdatesInstalledWorkerAndRuntimeFiles(t *testing.T) {
+	root := t.TempDir()
+	runtimeDir := filepath.Join(root, "opt", "olcrtc-panel", "wb")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "worker.mjs"), []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RefreshWBAutomation(root); err != nil {
+		t.Fatal(err)
+	}
+	embeddedWorker, err := fs.ReadFile(files, "files/wb/worker.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installedWorker, err := os.ReadFile(filepath.Join(runtimeDir, "worker.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(installedWorker) != string(embeddedWorker) {
+		t.Fatal("installed WB worker was not refreshed from the current binary")
+	}
+	for _, name := range []string{
+		filepath.Join("usr", "lib", "olcrtc-panel", "wb", "worker.mjs"),
+		filepath.Join("usr", "lib", "olcrtc-panel", "wb", "run-session.sh"),
+		filepath.Join("etc", "systemd", "system", "olcrtc-wb-session.service"),
+	} {
+		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+			t.Fatalf("refreshed WB asset %s: %v", name, err)
+		}
+	}
+}
+
+func TestWBSessionUsesEphemeralRuntimeState(t *testing.T) {
+	worker, err := fs.ReadFile(files, "files/wb/worker.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := fs.ReadFile(files, "files/wb/run-session.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, source := range map[string]string{"worker": string(worker), "runner": string(runner)} {
+		if !strings.Contains(source, "/run/olcrtc-wb/job.json") {
+			t.Fatalf("%s does not use the reference runtime job path", name)
+		}
+		if strings.Contains(source, "/var/lib/olcrtc-wb/job.json") {
+			t.Fatalf("%s still uses persistent storage for the session job", name)
+		}
+	}
+	panelUnit, err := fs.ReadFile(files, "files/systemd/olcrtc-panel.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"RuntimeDirectory=olcrtc-wb", "/run/olcrtc-wb"} {
+		if !strings.Contains(string(panelUnit), path) {
+			t.Fatalf("panel service does not allow WB path %s", path)
+		}
+	}
+}

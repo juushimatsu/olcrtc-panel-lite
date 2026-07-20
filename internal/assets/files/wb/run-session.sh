@@ -43,4 +43,4 @@ wait_for_tcp 5907 x11vnc || { cat "$XDG_RUNTIME_DIR/x11vnc.log" >&2; exit 1; }
 websockify --web=/usr/share/novnc 127.0.0.1:6080 127.0.0.1:5907 >"$XDG_RUNTIME_DIR/websockify.log" 2>&1 &
 wait_for_tcp 6080 websockify || { cat "$XDG_RUNTIME_DIR/websockify.log" >&2; exit 1; }
 
-/opt/olcrtc-panel/wb/node/bin/node /opt/olcrtc-panel/wb/worker.mjs /var/lib/olcrtc-wb/job.json
+/opt/olcrtc-panel/wb/node/bin/node /opt/olcrtc-panel/wb/worker.mjs /run/olcrtc-wb/job.json

@@ -5,10 +5,10 @@ import process from 'node:process';
 const require = createRequire(import.meta.url);
 const { chromium } = require('/opt/olcrtc-panel/wb/node_modules/playwright');
 
-const jobPath = process.argv[2] || '/var/lib/olcrtc-wb/job.json';
+const jobPath = process.argv[2] || '/run/olcrtc-wb/job.json';
 const job = JSON.parse(fs.readFileSync(jobPath, 'utf8'));
-const statePath = job.state_file || '/var/lib/olcrtc-wb/state.json';
-const controlPath = job.control_file || '/var/lib/olcrtc-wb/control.json';
+const statePath = job.state_file || '/run/olcrtc-wb/state.json';
+const controlPath = job.control_file || '/run/olcrtc-wb/control.json';
 const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i;
 const selectors = {
   quickMeeting: '[data-test="quick-meeting-card"]',
