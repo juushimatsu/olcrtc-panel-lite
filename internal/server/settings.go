@@ -341,7 +341,32 @@ func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
 	if phase, _ := statePayload["phase"].(string); phase == "applying" {
 		active = true
 	}
+	s.attachWBCreateToken(r.Context(), statePayload)
 	writeJSON(w, http.StatusOK, map[string]any{"active": active, "expires_at": expires, "extended": extended == "true", "novnc_url": wbNoVNCURL, "state": statePayload})
+}
+
+func (s *Server) attachWBCreateToken(ctx context.Context, state map[string]any) {
+	if !shouldExposeWBCreateToken(state) {
+		return
+	}
+	encrypted, _, err := s.store.Setting(ctx, "wb_token")
+	if err != nil {
+		return
+	}
+	token, err := s.secrets.Decrypt(encrypted)
+	if err != nil || token == "" {
+		if err != nil {
+			s.logger.Error("decrypt captured WB token for create response", "error", err)
+		}
+		return
+	}
+	state["token"] = token
+}
+
+func shouldExposeWBCreateToken(state map[string]any) bool {
+	phase, _ := state["phase"].(string)
+	action, _ := state["action"].(string)
+	return phase == "success" && action == "create"
 }
 
 func (s *Server) handleWBSessionExtend(w http.ResponseWriter, r *http.Request) {

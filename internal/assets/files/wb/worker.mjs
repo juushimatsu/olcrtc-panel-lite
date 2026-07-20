@@ -18,7 +18,7 @@ const selectors = {
 let activeContext;
 
 function writeState(phase, message, percent, extra = {}) {
-  const payload = { phase, message, percent, updated_at: Math.floor(Date.now() / 1000), ...extra };
+  const payload = { phase, message, percent, action: job.action, updated_at: Math.floor(Date.now() / 1000), ...extra };
   const temporary = `${statePath}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(payload), { mode: 0o600 });
   fs.renameSync(temporary, statePath);

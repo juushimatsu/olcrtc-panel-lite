@@ -75,3 +75,18 @@ func TestSanitizeWBSessionStateNeverReturnsCapturedToken(t *testing.T) {
 		t.Fatalf("state was not held in applying phase: %#v", state)
 	}
 }
+
+func TestWBCreateSessionExposesTokenOnlyAfterSuccess(t *testing.T) {
+	if !shouldExposeWBCreateToken(map[string]any{"phase": "success", "action": "create"}) {
+		t.Fatal("successful create session did not allow one authenticated token response")
+	}
+	for _, state := range []map[string]any{
+		{"phase": "applying", "action": "create"},
+		{"phase": "success", "action": "refresh"},
+		{"phase": "error", "action": "create"},
+	} {
+		if shouldExposeWBCreateToken(state) {
+			t.Fatalf("token was exposed for state %#v", state)
+		}
+	}
+}

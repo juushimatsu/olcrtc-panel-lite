@@ -525,7 +525,7 @@ function openWBTokenModal(){openModal('Обновить общий WB token вр
 async function fillWBInstanceForm(){
   const form=document.querySelector('form[data-form="instance"]');if(!form)return;
   const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action:'create'})});window.open(session.novnc_url,'olcrtc-wb-novnc','noopener');toast('WB-сессия запущена','Войдите в WB Stream и пройдите CAPTCHA.');
-  const current=await waitForWBSession();const room=current.state?.room_id||'';if(room)form.elements.room_id.value=room;form.elements.provider.value='wbstream';toast('WB данные получены',`Room ID заполнен. ${wbApplySummary(current.state?.applied)}`);
+  const current=await waitForWBSession();const room=current.state?.room_id||'',token=current.state?.token||'';if(!token)throw new Error('WB token не получен из успешной Playwright-сессии');if(room)form.elements.room_id.value=room;form.elements.auth_token.value=token;form.elements.provider.value='wbstream';toast('WB данные получены',`Room ID и WB account token заполнены. ${wbApplySummary(current.state?.applied)}`);
 }
 
 async function runWBSession(action){

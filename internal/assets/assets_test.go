@@ -236,3 +236,13 @@ func TestWBSessionRepairsSharedRuntimeOwnershipBeforeRunner(t *testing.T) {
 		t.Fatalf("WB session unit is missing ownership repair %q", required)
 	}
 }
+
+func TestWBWorkerCarriesSessionActionIntoResultState(t *testing.T) {
+	worker, err := fs.ReadFile(files, "files/wb/worker.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(worker), "action: job.action") {
+		t.Fatal("WB worker state does not identify create versus refresh sessions")
+	}
+}
