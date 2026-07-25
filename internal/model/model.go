@@ -56,9 +56,9 @@ type Instance struct {
 	Liveness            LivenessOptions  `json:"liveness"`
 	MaxSessionDuration  string           `json:"max_session_duration,omitempty"`
 	Traffic             TrafficOptions   `json:"traffic_options"`
-	Debug                  bool             `json:"debug"`
-	OmitClientAuthToken    bool             `json:"omit_client_auth_token"`
-	ResetPolicy            string           `json:"reset_policy"`
+	Debug               bool             `json:"debug"`
+	OmitClientAuthToken bool             `json:"omit_client_auth_token"`
+	ResetPolicy         string           `json:"reset_policy"`
 	QuotaBytes          int64            `json:"quota_bytes"`
 	ExpiresAt           *time.Time       `json:"expires_at,omitempty"`
 	CreatedAt           time.Time        `json:"created_at"`
@@ -86,25 +86,25 @@ type TrafficCounter struct {
 
 // Subscription publishes an OLCRTC Client feed and optional encrypted mirror.
 type Subscription struct {
-	ID              int64               `json:"id"`
-	Slug            string              `json:"slug"`
-	Name            string              `json:"name"`
-	RefreshInterval string              `json:"refresh"`
-	Color           string              `json:"color,omitempty"`
-	Icon            string              `json:"icon,omitempty"`
-	Enabled              bool                `json:"enabled"`
-	MirrorEnabled        bool                `json:"mirror_enabled"`
-	OmitClientAuthToken  bool                `json:"omit_client_auth_token"`
-	MirrorPublicURL string              `json:"mirror_public_url,omitempty"`
-	MirrorStatus    string              `json:"mirror_status,omitempty"`
-	CreatedAt       time.Time           `json:"created_at"`
-	UpdatedAt       time.Time           `json:"updated_at"`
-	Entries         []SubscriptionEntry `json:"entries,omitempty"`
-	UsedBytes       int64               `json:"used_bytes"`
-	UploadBytes     int64               `json:"upload_bytes"`
-	DownloadBytes   int64               `json:"download_bytes"`
-	AvailableBytes  *int64              `json:"available_bytes,omitempty"`
-	ExpiresAt       *time.Time          `json:"expires_at,omitempty"`
+	ID                  int64               `json:"id"`
+	Slug                string              `json:"slug"`
+	Name                string              `json:"name"`
+	RefreshInterval     string              `json:"refresh"`
+	Color               string              `json:"color,omitempty"`
+	Icon                string              `json:"icon,omitempty"`
+	Enabled             bool                `json:"enabled"`
+	MirrorEnabled       bool                `json:"mirror_enabled"`
+	OmitClientAuthToken bool                `json:"omit_client_auth_token"`
+	MirrorPublicURL     string              `json:"mirror_public_url,omitempty"`
+	MirrorStatus        string              `json:"mirror_status,omitempty"`
+	CreatedAt           time.Time           `json:"created_at"`
+	UpdatedAt           time.Time           `json:"updated_at"`
+	Entries             []SubscriptionEntry `json:"entries,omitempty"`
+	UsedBytes           int64               `json:"used_bytes"`
+	UploadBytes         int64               `json:"upload_bytes"`
+	DownloadBytes       int64               `json:"download_bytes"`
+	AvailableBytes      *int64              `json:"available_bytes,omitempty"`
+	ExpiresAt           *time.Time          `json:"expires_at,omitempty"`
 }
 
 // SubscriptionEntry is linked to an instance or stores an immutable manual URI.
