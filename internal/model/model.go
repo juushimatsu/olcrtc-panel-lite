@@ -56,8 +56,9 @@ type Instance struct {
 	Liveness            LivenessOptions  `json:"liveness"`
 	MaxSessionDuration  string           `json:"max_session_duration,omitempty"`
 	Traffic             TrafficOptions   `json:"traffic_options"`
-	Debug               bool             `json:"debug"`
-	ResetPolicy         string           `json:"reset_policy"`
+	Debug                  bool             `json:"debug"`
+	OmitClientAuthToken    bool             `json:"omit_client_auth_token"`
+	ResetPolicy            string           `json:"reset_policy"`
 	QuotaBytes          int64            `json:"quota_bytes"`
 	ExpiresAt           *time.Time       `json:"expires_at,omitempty"`
 	CreatedAt           time.Time        `json:"created_at"`
@@ -91,8 +92,9 @@ type Subscription struct {
 	RefreshInterval string              `json:"refresh"`
 	Color           string              `json:"color,omitempty"`
 	Icon            string              `json:"icon,omitempty"`
-	Enabled         bool                `json:"enabled"`
-	MirrorEnabled   bool                `json:"mirror_enabled"`
+	Enabled              bool                `json:"enabled"`
+	MirrorEnabled        bool                `json:"mirror_enabled"`
+	OmitClientAuthToken  bool                `json:"omit_client_auth_token"`
 	MirrorPublicURL string              `json:"mirror_public_url,omitempty"`
 	MirrorStatus    string              `json:"mirror_status,omitempty"`
 	CreatedAt       time.Time           `json:"created_at"`

@@ -12,8 +12,8 @@ import (
 // CreateSubscription inserts a subscription.
 func (s *Store) CreateSubscription(ctx context.Context, item model.Subscription, mirrorKeyEncrypted string) (model.Subscription, error) {
 	now := time.Now()
-	result, err := s.db.ExecContext(ctx, `INSERT INTO subscriptions(slug, name, refresh_interval, color, icon, enabled, mirror_enabled, mirror_key_encrypted, mirror_public_url, mirror_status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.Slug, item.Name, item.RefreshInterval, item.Color, item.Icon, item.Enabled, item.MirrorEnabled, mirrorKeyEncrypted, item.MirrorPublicURL, item.MirrorStatus, formatTime(now), formatTime(now))
+	result, err := s.db.ExecContext(ctx, `INSERT INTO subscriptions(slug, name, refresh_interval, color, icon, enabled, mirror_enabled, mirror_key_encrypted, mirror_public_url, mirror_status, omit_client_auth_token, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.Slug, item.Name, item.RefreshInterval, item.Color, item.Icon, item.Enabled, item.MirrorEnabled, mirrorKeyEncrypted, item.MirrorPublicURL, item.MirrorStatus, item.OmitClientAuthToken, formatTime(now), formatTime(now))
 	if err != nil {
 		return model.Subscription{}, fmt.Errorf("create subscription: %w", err)
 	}
@@ -26,8 +26,8 @@ func (s *Store) CreateSubscription(ctx context.Context, item model.Subscription,
 
 // UpdateSubscription replaces mutable subscription metadata.
 func (s *Store) UpdateSubscription(ctx context.Context, item model.Subscription) (model.Subscription, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET name=?, refresh_interval=?, color=?, icon=?, enabled=?, mirror_enabled=?, mirror_public_url=?, mirror_status=?, updated_at=? WHERE slug=?`,
-		item.Name, item.RefreshInterval, item.Color, item.Icon, item.Enabled, item.MirrorEnabled, item.MirrorPublicURL, item.MirrorStatus, formatTime(time.Now()), item.Slug)
+	result, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET name=?, refresh_interval=?, color=?, icon=?, enabled=?, mirror_enabled=?, mirror_public_url=?, mirror_status=?, omit_client_auth_token=?, updated_at=? WHERE slug=?`,
+		item.Name, item.RefreshInterval, item.Color, item.Icon, item.Enabled, item.MirrorEnabled, item.MirrorPublicURL, item.MirrorStatus, item.OmitClientAuthToken, formatTime(time.Now()), item.Slug)
 	if err != nil {
 		return model.Subscription{}, fmt.Errorf("update subscription: %w", err)
 	}
@@ -40,7 +40,7 @@ func (s *Store) UpdateSubscription(ctx context.Context, item model.Subscription)
 
 // Subscription returns one subscription and its ordered entries.
 func (s *Store) Subscription(ctx context.Context, slug string) (model.Subscription, error) {
-	item, err := scanSubscription(s.db.QueryRowContext(ctx, `SELECT id, slug, name, refresh_interval, color, icon, enabled, mirror_enabled, mirror_public_url, mirror_status, created_at, updated_at FROM subscriptions WHERE slug=?`, slug).Scan)
+	item, err := scanSubscription(s.db.QueryRowContext(ctx, `SELECT id, slug, name, refresh_interval, color, icon, enabled, mirror_enabled, mirror_public_url, mirror_status, omit_client_auth_token, created_at, updated_at FROM subscriptions WHERE slug=?`, slug).Scan)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -50,7 +50,7 @@ func (s *Store) Subscription(ctx context.Context, slug string) (model.Subscripti
 
 // SubscriptionByID returns one subscription and entries.
 func (s *Store) SubscriptionByID(ctx context.Context, id int64) (model.Subscription, error) {
-	item, err := scanSubscription(s.db.QueryRowContext(ctx, `SELECT id, slug, name, refresh_interval, color, icon, enabled, mirror_enabled, mirror_public_url, mirror_status, created_at, updated_at FROM subscriptions WHERE id=?`, id).Scan)
+	item, err := scanSubscription(s.db.QueryRowContext(ctx, `SELECT id, slug, name, refresh_interval, color, icon, enabled, mirror_enabled, mirror_public_url, mirror_status, omit_client_auth_token, created_at, updated_at FROM subscriptions WHERE id=?`, id).Scan)
 	if err != nil {
 		return model.Subscription{}, err
 	}
@@ -60,7 +60,7 @@ func (s *Store) SubscriptionByID(ctx context.Context, id int64) (model.Subscript
 
 // Subscriptions returns all subscriptions and their entries.
 func (s *Store) Subscriptions(ctx context.Context) ([]model.Subscription, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, slug, name, refresh_interval, color, icon, enabled, mirror_enabled, mirror_public_url, mirror_status, created_at, updated_at FROM subscriptions ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, slug, name, refresh_interval, color, icon, enabled, mirror_enabled, mirror_public_url, mirror_status, omit_client_auth_token, created_at, updated_at FROM subscriptions ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -93,14 +93,16 @@ func scanSubscription(scan scanner) (model.Subscription, error) {
 	var item model.Subscription
 	var enabled int
 	var mirrorEnabled int
+	var omitClientAuthToken int
 	var created string
 	var updated string
-	err := scan(&item.ID, &item.Slug, &item.Name, &item.RefreshInterval, &item.Color, &item.Icon, &enabled, &mirrorEnabled, &item.MirrorPublicURL, &item.MirrorStatus, &created, &updated)
+	err := scan(&item.ID, &item.Slug, &item.Name, &item.RefreshInterval, &item.Color, &item.Icon, &enabled, &mirrorEnabled, &item.MirrorPublicURL, &item.MirrorStatus, &omitClientAuthToken, &created, &updated)
 	if err != nil {
 		return model.Subscription{}, err
 	}
 	item.Enabled = enabled != 0
 	item.MirrorEnabled = mirrorEnabled != 0
+	item.OmitClientAuthToken = omitClientAuthToken != 0
 	item.CreatedAt, err = parseTime(created)
 	if err != nil {
 		return model.Subscription{}, err

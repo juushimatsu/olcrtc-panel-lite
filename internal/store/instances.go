@@ -13,7 +13,7 @@ import (
 
 const instanceColumns = `i.id, i.client_id, i.name, i.provider, i.transport, i.room_id, i.room_channel,
 i.auth_token_encrypted, i.dns, i.outbound_proxy_encrypted, i.transport_options_json,
-i.liveness_json, i.max_session_duration, i.traffic_options_json, i.debug, i.reset_policy,
+i.liveness_json, i.max_session_duration, i.traffic_options_json, i.debug, i.omit_client_auth_token, i.reset_policy,
 i.quota_bytes, i.expires_at, i.created_at, i.updated_at,
 COALESCE(t.upload_bytes, 0), COALESCE(t.download_bytes, 0), COALESCE(t.total_bytes, 0), t.last_event_at`
 
@@ -35,8 +35,8 @@ func (s *Store) CreateInstance(ctx context.Context, item model.Instance) (model.
 		return model.Instance{}, fmt.Errorf("begin instance create: %w", err)
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `INSERT INTO instances(client_id, name, provider, transport, room_id, room_channel, auth_token_encrypted, dns, outbound_proxy_encrypted, transport_options_json, liveness_json, max_session_duration, traffic_options_json, debug, reset_policy, quota_bytes, expires_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ClientID, item.Name, item.Provider, item.Transport, item.RoomID, item.RoomChannel, item.AuthToken, item.DNS, item.OutboundProxy, string(options), string(liveness), item.MaxSessionDuration, string(traffic), item.Debug, item.ResetPolicy, item.QuotaBytes, expires, formatTime(now), formatTime(now))
+	result, err := tx.ExecContext(ctx, `INSERT INTO instances(client_id, name, provider, transport, room_id, room_channel, auth_token_encrypted, dns, outbound_proxy_encrypted, transport_options_json, liveness_json, max_session_duration, traffic_options_json, debug, omit_client_auth_token, reset_policy, quota_bytes, expires_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ClientID, item.Name, item.Provider, item.Transport, item.RoomID, item.RoomChannel, item.AuthToken, item.DNS, item.OutboundProxy, string(options), string(liveness), item.MaxSessionDuration, string(traffic), item.Debug, item.OmitClientAuthToken, item.ResetPolicy, item.QuotaBytes, expires, formatTime(now), formatTime(now))
 	if err != nil {
 		return model.Instance{}, fmt.Errorf("insert instance: %w", err)
 	}
@@ -62,8 +62,8 @@ func (s *Store) UpdateInstance(ctx context.Context, item model.Instance) (model.
 	if item.ExpiresAt != nil {
 		expires = formatTime(*item.ExpiresAt)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE instances SET client_id=?, name=?, provider=?, transport=?, room_id=?, room_channel=?, auth_token_encrypted=?, dns=?, outbound_proxy_encrypted=?, transport_options_json=?, liveness_json=?, max_session_duration=?, traffic_options_json=?, debug=?, reset_policy=?, quota_bytes=?, expires_at=?, updated_at=? WHERE id=?`,
-		item.ClientID, item.Name, item.Provider, item.Transport, item.RoomID, item.RoomChannel, item.AuthToken, item.DNS, item.OutboundProxy, string(options), string(liveness), item.MaxSessionDuration, string(traffic), item.Debug, item.ResetPolicy, item.QuotaBytes, expires, formatTime(time.Now()), item.ID)
+	result, err := s.db.ExecContext(ctx, `UPDATE instances SET client_id=?, name=?, provider=?, transport=?, room_id=?, room_channel=?, auth_token_encrypted=?, dns=?, outbound_proxy_encrypted=?, transport_options_json=?, liveness_json=?, max_session_duration=?, traffic_options_json=?, debug=?, omit_client_auth_token=?, reset_policy=?, quota_bytes=?, expires_at=?, updated_at=? WHERE id=?`,
+		item.ClientID, item.Name, item.Provider, item.Transport, item.RoomID, item.RoomChannel, item.AuthToken, item.DNS, item.OutboundProxy, string(options), string(liveness), item.MaxSessionDuration, string(traffic), item.Debug, item.OmitClientAuthToken, item.ResetPolicy, item.QuotaBytes, expires, formatTime(time.Now()), item.ID)
 	if err != nil {
 		return model.Instance{}, fmt.Errorf("update instance: %w", err)
 	}
@@ -106,18 +106,20 @@ func scanInstance(scan scanner) (model.Instance, error) {
 	var liveness string
 	var traffic string
 	var debug int
+	var omitClientAuthToken int
 	var expires sql.NullString
 	var created string
 	var updated string
 	var lastTraffic sql.NullString
 	err := scan(&item.ID, &item.ClientID, &item.Name, &item.Provider, &item.Transport, &item.RoomID, &item.RoomChannel,
 		&item.AuthToken, &item.DNS, &item.OutboundProxy, &options, &liveness, &item.MaxSessionDuration,
-		&traffic, &debug, &item.ResetPolicy, &item.QuotaBytes, &expires, &created, &updated,
+		&traffic, &debug, &omitClientAuthToken, &item.ResetPolicy, &item.QuotaBytes, &expires, &created, &updated,
 		&item.UploadBytes, &item.DownloadBytes, &item.TotalBytes, &lastTraffic)
 	if err != nil {
 		return model.Instance{}, err
 	}
 	item.Debug = debug != 0
+	item.OmitClientAuthToken = omitClientAuthToken != 0
 	if err := json.Unmarshal([]byte(options), &item.Options); err != nil {
 		return model.Instance{}, fmt.Errorf("decode transport options: %w", err)
 	}

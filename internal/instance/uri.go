@@ -115,7 +115,7 @@ func ClientURI(item model.Instance, key, name string) (string, error) {
 	if strings.TrimSpace(item.ClientID) == "" || strings.ContainsAny(item.ClientID, "\r\n") {
 		return "", errors.New("client_id is required")
 	}
-	if item.Provider == "wbstream" && item.AuthToken == "" {
+	if item.Provider == "wbstream" && item.AuthToken == "" && !item.OmitClientAuthToken {
 		return "", errors.New("WB auth token is required for OLCRTC Client QR")
 	}
 
@@ -124,7 +124,7 @@ func ClientURI(item model.Instance, key, name string) (string, error) {
 		parts = append(parts, "f="+strconv.Itoa(item.Options.VP8FPS), "b="+strconv.Itoa(item.Options.VP8Batch))
 	}
 	parts = append(parts, "c="+clientEscape(item.ClientID))
-	if item.Provider == "wbstream" {
+	if item.Provider == "wbstream" && item.AuthToken != "" && !item.OmitClientAuthToken {
 		parts = append(parts, "a="+clientEscape(item.AuthToken))
 	}
 	if item.DNS != "" {
@@ -357,6 +357,38 @@ func validateStandardTransport(token string) (string, error) {
 		}
 	}
 	return transport, nil
+}
+
+// StripAuthToken removes the auth token parameter (a= / auth_token= / auth.token=)
+// from a compact OLCRTC Client URI query string.  It is a no-op for URIs that
+// do not carry that parameter or that are not in the client URI format.
+func StripAuthToken(uri string) string {
+	at := strings.IndexByte(uri, '@')
+	q := strings.IndexByte(uri, '?')
+	if at < 0 || q < 0 || q < at {
+		return uri
+	}
+	frag := strings.IndexByte(uri, '#')
+	queryEnd := len(uri)
+	if frag > q {
+		queryEnd = frag
+	}
+	raw := uri[q+1 : queryEnd]
+	parts := strings.Split(raw, "&")
+	kept := parts[:0]
+	for _, p := range parts {
+		key, _, _ := strings.Cut(p, "=")
+		if key == "a" || key == "auth_token" || key == "auth.token" {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	newQuery := strings.Join(kept, "&")
+	tail := ""
+	if frag >= 0 {
+		tail = uri[frag:]
+	}
+	return uri[:q+1] + newQuery + tail
 }
 
 func clientEscape(value string) string {

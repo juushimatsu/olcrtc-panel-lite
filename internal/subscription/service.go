@@ -125,7 +125,7 @@ func (s *Service) render(ctx context.Context, slug, format string) (string, mode
 		if !entry.Enabled {
 			continue
 		}
-		uri, source, included, err := s.resolveEntryForFormat(ctx, entry, format)
+		uri, source, included, err := s.resolveEntryForFormat(ctx, entry, format, sub.OmitClientAuthToken)
 		if err != nil {
 			return "", sub, err
 		}
@@ -312,7 +312,7 @@ func (s *Service) GenerateMirrorKey() (string, string, error) {
 	return plain, encrypted, err
 }
 
-func (s *Service) resolveEntryForFormat(ctx context.Context, entry model.SubscriptionEntry, format string) (string, *model.Instance, bool, error) {
+func (s *Service) resolveEntryForFormat(ctx context.Context, entry model.SubscriptionEntry, format string, subOmitToken bool) (string, *model.Instance, bool, error) {
 	if format != "client" && format != "olcbox" {
 		return "", nil, false, fmt.Errorf("unsupported subscription format %q", format)
 	}
@@ -326,12 +326,16 @@ func (s *Service) resolveEntryForFormat(ctx context.Context, entry model.Subscri
 	if err != nil {
 		return "", nil, false, err
 	}
-	if format == "client" && (!instance.ClientCompatible(item.Provider, item.Transport) || (item.Provider == "wbstream" && !item.AuthTokenSet)) {
+	if format == "client" && (!instance.ClientCompatible(item.Provider, item.Transport) ||
+		(item.Provider == "wbstream" && !item.AuthTokenSet && !item.OmitClientAuthToken && !subOmitToken)) {
 		return "", &item, false, nil
 	}
 	uri, err := s.instances.URI(ctx, *entry.SourceInstanceID, format)
 	if err != nil {
 		return "", &item, false, err
+	}
+	if format == "client" && item.Provider == "wbstream" && subOmitToken {
+		uri = instance.StripAuthToken(uri)
 	}
 	return uri, &item, true, nil
 }
