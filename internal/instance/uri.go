@@ -331,7 +331,7 @@ func validateStandardTransport(token string) (string, error) {
 	if payload == "" {
 		return transport, nil
 	}
-	allowed := map[string]bool{}
+	var allowed map[string]bool
 	switch transport {
 	case "vp8channel":
 		allowed = map[string]bool{"vp8-fps": true, "vp8-batch": true}
