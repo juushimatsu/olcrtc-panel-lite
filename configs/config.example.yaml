@@ -15,4 +15,4 @@ cookie_name: "olcrtc_panel_session"
 hsts: false
 release_manifest_url: ""
 upstream_sha: ""
-panel_version: "0.1.0"
+panel_version: "0.2.0"

@@ -129,10 +129,16 @@ code, .mono { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospac
 .summary-card span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
 .summary-card strong { display: block; font-size: 18px; font-weight: 620; }
 .toolbar { min-height: 65px; padding: 13px 20px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--line); }
+.toolbar.compact { min-height: 46px; padding: 7px 16px; }
 .filters { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
+.toolbar.compact .filters { gap: 6px; }
+.toolbar.compact .select, .toolbar.compact .input { min-height: 30px; padding: 3px 8px; font-size: 12px; }
 .search { position: relative; min-width: 230px; }
+.toolbar.compact .search { min-width: 170px; }
 .search::before { content: "⌕"; position: absolute; left: 12px; top: 8px; color: var(--muted); }
+.toolbar.compact .search::before { top: 5px; font-size: 13px; }
 .search input { padding-left: 34px; }
+.toolbar.compact .search input { padding-left: 28px; }
 
 .field { display: grid; gap: 7px; }
 .field label, .field-label { color: var(--muted); font-size: 12px; font-weight: 520; }
