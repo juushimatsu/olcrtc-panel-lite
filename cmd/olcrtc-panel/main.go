@@ -98,6 +98,11 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Inject binary version as fallback so the UI always shows the real version
+	// even when config.yaml or manifest.json don't carry one.
+	if cfg.PanelVersion == "" || cfg.PanelVersion == "dev" {
+		cfg.PanelVersion = version
+	}
 	config.ApplyInstalledRelease(&cfg)
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	st, secrets, err := openState(cfg)
