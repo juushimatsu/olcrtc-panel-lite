@@ -84,7 +84,7 @@ jobs:
         run: |
           panel_short=${GITHUB_SHA:0:8}
           bundle="bundle-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.short }}-${panel_short}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          panel_version="0.1.0"
+          panel_version="0.2.0"
           jq -n \
             --arg bundle "$bundle" --arg version "$panel_version" --arg sha "${{ steps.upstream.outputs.sha }}" \
             --arg commit_time "${{ steps.upstream.outputs.commit_time }}" --arg build_time "$(date -u +%FT%TZ)" --arg goversion "$(go version | awk '{print $3}')" \
