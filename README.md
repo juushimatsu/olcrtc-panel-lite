@@ -1,5 +1,7 @@
 # olcrtc-panel-lite
 
+Self-hosted HTTPS admin panel for deploying and managing [olcRTC](https://github.com/openlibrecommunity/olcrtc) VPN server instances on Ubuntu 22.04/24.04 and Debian 12. Ships as a single Go binary with a web UI, internal API, subscription server, traffic collector, and updater — no changes to upstream, no Node.js runtime required.
+
 Самостоятельная HTTPS-панель для управления официальным [olcRTC](https://github.com/openlibrecommunity/olcrtc) на Ubuntu 22.04/24.04 и Debian 12.
 
 Панель не изменяет upstream и не встраивается в него. Каждый инстанс запускается отдельным `olcrtc-instance@<id>.service` с официальным YAML-файлом. В одном Go-бинарнике находятся web UI, внутренний API, subscription server, traffic collector и updater controller.
