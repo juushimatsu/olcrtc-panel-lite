@@ -61,6 +61,7 @@ func (s *Server) routesSettings(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/wb/session", s.requireAuth(http.HandlerFunc(s.handleWBSessionGet)))
 	mux.Handle("POST /api/v1/wb/session/extend", s.requireAuth(http.HandlerFunc(s.handleWBSessionExtend)))
 	mux.Handle("DELETE /api/v1/wb/session", s.requireAuth(http.HandlerFunc(s.handleWBSessionStop)))
+	mux.Handle("POST /api/v1/wb/profile/reset", s.requireAuth(http.HandlerFunc(s.handleWBProfileReset)))
 	mux.Handle("POST /api/v1/wb/token/refresh", s.requireAuth(http.HandlerFunc(s.handleWBTokenRefresh)))
 
 	mux.Handle("GET /api/v1/updates/check", s.requireAuth(http.HandlerFunc(s.handleUpdatesCheck)))
@@ -402,6 +403,30 @@ func (s *Server) handleWBSessionStop(w http.ResponseWriter, r *http.Request) {
 	cleanupWBWorkerFiles()
 	wbSessionStateMu.Unlock()
 	audit(s, r, "wb.session_stop", "wb", "session", "success", "")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleWBProfileReset stops any active WB browser session and removes the
+// persistent Chromium profile directory so the next Playwright session starts
+// from a clean state and requires a fresh WB login.
+func (s *Server) handleWBProfileReset(w http.ResponseWriter, r *http.Request) {
+	stopWBSessionMonitor()
+	if runtime.GOOS == "linux" {
+		_ = exec.CommandContext(r.Context(), "systemctl", "stop", wbSessionService).Run()
+		_ = exec.CommandContext(r.Context(), "systemctl", "reset-failed", wbSessionService).Run()
+	}
+	wbSessionStateMu.Lock()
+	cleanupWBWorkerFiles()
+	wbSessionStateMu.Unlock()
+	_ = s.store.DeleteSetting(r.Context(), "wb_session_expires")
+	_ = s.store.DeleteSetting(r.Context(), "wb_session_extended")
+	if runtime.GOOS == "linux" {
+		if err := os.RemoveAll(wbProfileDir); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "wb_profile_reset_failed", "Не удалось очистить Chromium profile: "+err.Error())
+			return
+		}
+	}
+	audit(s, r, "wb.profile_reset", "wb", "profile", "success", "chromium profile cleared")
 	w.WriteHeader(http.StatusNoContent)
 }
 
