@@ -228,6 +228,79 @@ func TestPublicSubscriptionIsolation(t *testing.T) {
 	}
 }
 
+func TestLinkedSubscriptionUsesUpdatedInstanceData(t *testing.T) {
+	p := newTestPanel(t)
+	csrf := loginTestPanel(t, p)
+	slug := "updatedinstancefeed"
+
+	resp := p.request(t, http.MethodPost, "/api/v1/instances", map[string]any{
+		"name": "old-node", "provider": "jitsi", "transport": "datachannel",
+		"room_id": "https://meet.example/old-room", "dns": "8.8.8.8:53",
+	}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create instance status=%d", resp.StatusCode)
+	}
+	resp = p.request(t, http.MethodPost, "/api/v1/subscriptions", map[string]any{
+		"slug": slug, "name": "Updated instance", "refresh": "10m", "enabled": true,
+	}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create subscription status=%d", resp.StatusCode)
+	}
+	resp = p.request(t, http.MethodPost, "/api/v1/subscriptions/"+slug+"/entries", map[string]any{
+		"source_instance_id": 1, "enabled": true,
+	}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create entry status=%d", resp.StatusCode)
+	}
+	readFeed := func() string {
+		response := p.request(t, http.MethodGet, "/sub/"+slug, nil, "")
+		defer response.Body.Close()
+		var body bytes.Buffer
+		_, _ = body.ReadFrom(response.Body)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("subscription status=%d body=%s", response.StatusCode, body.String())
+		}
+		return body.String()
+	}
+	feedRevision := func(feed string) string {
+		for _, line := range strings.Split(feed, "\n") {
+			if strings.HasPrefix(line, "#update: ") {
+				return strings.TrimPrefix(line, "#update: ")
+			}
+		}
+		t.Fatalf("subscription feed has no #update:\n%s", feed)
+		return ""
+	}
+	oldRevision := feedRevision(readFeed())
+
+	resp = p.request(t, http.MethodPut, "/api/v1/instances/1", map[string]any{
+		"name": "new-node", "provider": "jitsi", "transport": "datachannel",
+		"room_id": "https://meet.example/new-room", "dns": "1.1.1.1:53",
+	}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update instance status=%d", resp.StatusCode)
+	}
+
+	feed := readFeed()
+	if revision := feedRevision(feed); revision == oldRevision {
+		t.Fatalf("subscription revision did not change after linked instance update: %s", revision)
+	}
+	for _, want := range []string{"https%3A%2F%2Fmeet.example%2Fnew-room", "d=1.1.1.1%3A53", "#new-node"} {
+		if !strings.Contains(feed, want) {
+			t.Fatalf("updated value %q missing from feed:\n%s", want, feed)
+		}
+	}
+	for _, stale := range []string{"old-room", "8.8.8.8", "old-node"} {
+		if strings.Contains(feed, stale) {
+			t.Fatalf("stale value %q remains in feed:\n%s", stale, feed)
+		}
+	}
+}
+
 func TestPublicSubscriptionOpenRedirectsToClient(t *testing.T) {
 	p := newTestPanel(t)
 	_, err := p.store.CreateSubscription(context.Background(), model.Subscription{Slug: "abcdefghijklmnop", Name: "Public", RefreshInterval: "10m", Enabled: true}, "")

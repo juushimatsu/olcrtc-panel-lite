@@ -109,3 +109,43 @@ func TestSubscriptionsListWithSingleConnection(t *testing.T) {
 		t.Fatalf("subscriptions=%#v", items)
 	}
 }
+
+func TestSubscriptionRevisionIsMonotonicAndMirrorStatusDoesNotChangeIt(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	sub, err := st.CreateSubscription(ctx, model.Subscription{
+		Slug: "monotonicrevision", Name: "sub", RefreshInterval: "10m", Enabled: true,
+	}, "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	future := time.Now().Add(time.Hour).Truncate(time.Second)
+	if _, err := st.db.ExecContext(ctx, `UPDATE subscriptions SET updated_at=? WHERE id=?`, formatTime(future), sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TouchSubscriptions(ctx, []string{sub.Slug}); err != nil {
+		t.Fatal(err)
+	}
+	touched, err := st.Subscription(ctx, sub.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := touched.UpdatedAt.Unix(), future.Unix()+1; got != want {
+		t.Fatalf("touched revision=%d want=%d", got, want)
+	}
+
+	if err := st.SetSubscriptionMirror(ctx, sub.ID, "https://yadi.sk/d/test", "synced"); err != nil {
+		t.Fatal(err)
+	}
+	synced, err := st.Subscription(ctx, sub.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !synced.UpdatedAt.Equal(touched.UpdatedAt) {
+		t.Fatalf("mirror status changed content revision: before=%s after=%s", touched.UpdatedAt, synced.UpdatedAt)
+	}
+	if synced.MirrorPublicURL != "https://yadi.sk/d/test" || synced.MirrorStatus != "synced" {
+		t.Fatalf("mirror state was not stored: %#v", synced)
+	}
+}

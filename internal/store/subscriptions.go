@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -267,7 +268,7 @@ func (s *Store) SubscriptionMirrorKey(ctx context.Context, id int64) (string, er
 
 // SetSubscriptionMirror updates mirror state after a sync attempt.
 func (s *Store) SetSubscriptionMirror(ctx context.Context, id int64, publicURL, status string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET mirror_public_url=?, mirror_status=?, updated_at=? WHERE id=?`, publicURL, status, formatTime(time.Now()), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET mirror_public_url=?, mirror_status=? WHERE id=?`, publicURL, status, id)
 	return err
 }
 
@@ -291,12 +292,32 @@ func (s *Store) SubscriptionSlugsForInstance(ctx context.Context, instanceID int
 
 // TouchSubscriptions updates the feed #update value after content changes.
 func (s *Store) TouchSubscriptions(ctx context.Context, slugs []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	for _, slug := range slugs {
-		if _, err := s.db.ExecContext(ctx, `UPDATE subscriptions SET updated_at=? WHERE slug=?`, formatTime(time.Now()), slug); err != nil {
+		var rawUpdated string
+		if err := tx.QueryRowContext(ctx, `SELECT updated_at FROM subscriptions WHERE slug=?`, slug).Scan(&rawUpdated); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return err
+		}
+		current, err := parseTime(rawUpdated)
+		if err != nil {
+			return err
+		}
+		next := time.Now()
+		if next.Unix() <= current.Unix() {
+			next = time.Unix(current.Unix()+1, 0)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE subscriptions SET updated_at=? WHERE slug=?`, formatTime(next), slug); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 func nullableString(value string) any {
