@@ -72,6 +72,55 @@ func TestClientURIContainsCompleteWBToken(t *testing.T) {
 	}
 }
 
+func TestClientURIOmitsWBAuthTokenParameter(t *testing.T) {
+	item := validInstance()
+	item.Provider = "wbstream"
+	item.Transport = "vp8channel"
+	item.RoomID = "11111111-2222-4333-8444-555555555555"
+	item.ClientID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	item.AuthToken = "private-wb-token"
+	item.OmitClientAuthToken = true
+	got, err := ClientURI(item, strings.Repeat("c", 64), "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Query().Has("a") {
+		t.Fatalf("omitted auth token parameter remains in URI: %s", got)
+	}
+	if parsed.Query().Get("d") != item.DNS {
+		t.Fatalf("parameter after auth token was lost: %s", got)
+	}
+	if strings.Contains(got, item.AuthToken) {
+		t.Fatalf("omitted auth token leaked into URI: %s", got)
+	}
+}
+
+func TestStripAuthTokenRemovesEntireParameter(t *testing.T) {
+	base := "olcrtc://wbstream@r/room?k=" + strings.Repeat("a", 64) + "&t=vp8channel&c=client"
+	tests := []struct {
+		name string
+		uri  string
+		want string
+	}{
+		{name: "compact", uri: base + "&a=secret&d=77.88.8.8%3A53#node", want: base + "&d=77.88.8.8%3A53#node"},
+		{name: "compact empty", uri: base + "&a=&d=77.88.8.8%3A53#node", want: base + "&d=77.88.8.8%3A53#node"},
+		{name: "long", uri: base + "&auth_token=secret&d=77.88.8.8%3A53", want: base + "&d=77.88.8.8%3A53"},
+		{name: "dotted", uri: base + "&auth.token=secret&d=77.88.8.8%3A53", want: base + "&d=77.88.8.8%3A53"},
+		{name: "absent", uri: base + "&d=77.88.8.8%3A53", want: base + "&d=77.88.8.8%3A53"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := StripAuthToken(test.uri); got != test.want {
+				t.Fatalf("StripAuthToken() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestValidateClientURICompatibility(t *testing.T) {
 	key := strings.Repeat("a", 64)
 	valid := "olcrtc://jitsi@r/https%3A%2F%2Fmeet.example%2Froom?k=" + key + "&t=datachannel&c=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"

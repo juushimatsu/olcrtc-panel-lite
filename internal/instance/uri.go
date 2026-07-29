@@ -100,8 +100,8 @@ func ClientCompatible(provider, transport string) bool {
 		provider == "jitsi" && transport == "datachannel"
 }
 
-// ClientURI renders the compact secret-bearing URI understood by OLCRTC
-// Client. The WB account token is intentionally included in full.
+// ClientURI renders the compact URI understood by OLCRTC Client. The WB
+// account token is included in full unless publishing it is disabled.
 func ClientURI(item model.Instance, key, name string) (string, error) {
 	if err := validateKey(key); err != nil {
 		return "", err
@@ -124,12 +124,8 @@ func ClientURI(item model.Instance, key, name string) (string, error) {
 		parts = append(parts, "f="+strconv.Itoa(item.Options.VP8FPS), "b="+strconv.Itoa(item.Options.VP8Batch))
 	}
 	parts = append(parts, "c="+clientEscape(item.ClientID))
-	if item.Provider == "wbstream" {
-		if item.OmitClientAuthToken {
-			parts = append(parts, "a=")
-		} else {
-			parts = append(parts, "a="+clientEscape(item.AuthToken))
-		}
+	if item.Provider == "wbstream" && !item.OmitClientAuthToken {
+		parts = append(parts, "a="+clientEscape(item.AuthToken))
 	}
 	if item.DNS != "" {
 		parts = append(parts, "d="+clientEscape(item.DNS))
@@ -363,10 +359,9 @@ func validateStandardTransport(token string) (string, error) {
 	return transport, nil
 }
 
-// StripAuthToken replaces the auth token value (a= / auth_token= / auth.token=)
-// with an empty string in a compact OLCRTC Client URI query string, signalling
-// guest WB auth to the client.  It is a no-op for URIs that do not carry that
-// parameter or that are not in the client URI format.
+// StripAuthToken removes auth token parameters (a / auth_token / auth.token)
+// from a compact OLCRTC Client URI. It is a no-op for URIs that do not carry
+// such a parameter or that are not in the client URI format.
 func StripAuthToken(uri string) string {
 	at := strings.IndexByte(uri, '@')
 	q := strings.IndexByte(uri, '?')
@@ -380,13 +375,15 @@ func StripAuthToken(uri string) string {
 	}
 	raw := uri[q+1 : queryEnd]
 	parts := strings.Split(raw, "&")
-	for i, p := range parts {
+	filtered := make([]string, 0, len(parts))
+	for _, p := range parts {
 		key, _, _ := strings.Cut(p, "=")
 		if key == "a" || key == "auth_token" || key == "auth.token" {
-			parts[i] = key + "="
+			continue
 		}
+		filtered = append(filtered, p)
 	}
-	newQuery := strings.Join(parts, "&")
+	newQuery := strings.Join(filtered, "&")
 	tail := ""
 	if frag >= 0 {
 		tail = uri[frag:]

@@ -41,3 +41,20 @@ func TestSubscriptionUIExposesClientAndOLCBOXProjections(t *testing.T) {
 		}
 	}
 }
+
+func TestWBSettingsActionsWrapWithinSection(t *testing.T) {
+	app, err := fs.ReadFile(Static, "static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := fs.ReadFile(Static, "static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(app), `class="form-actions wb-actions"`) {
+		t.Fatal("WB settings actions are missing their scoped layout class")
+	}
+	if !strings.Contains(string(styles), `.wb-actions { justify-content: flex-start; flex-wrap: wrap; }`) {
+		t.Fatal("WB settings actions do not wrap within their section")
+	}
+}

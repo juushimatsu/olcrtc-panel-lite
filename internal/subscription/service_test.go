@@ -3,6 +3,7 @@ package subscription
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,6 +56,60 @@ func TestStandardRendererBindsMetadataToURI(t *testing.T) {
 	manualIndex := strings.Index(body, manual)
 	if linkedIndex < 0 || manualIndex < linkedIndex {
 		t.Fatalf("metadata binding/order wrong:\n%s", body)
+	}
+}
+
+func TestStandardRendererOmitsWBAuthTokenParameter(t *testing.T) {
+	root := t.TempDir()
+	st, err := store.Open(filepath.Join(root, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	secrets, _ := security.NewSecrets(make([]byte, 32))
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	ctx := context.Background()
+	node, err := manager.Create(ctx, model.Instance{
+		Name: "WB", Provider: "wbstream", Transport: "vp8channel",
+		RoomID: "11111111-2222-4333-8444-555555555555", DNS: "77.88.8.8:53", AuthToken: "private-wb-token",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := st.CreateSubscription(ctx, model.Subscription{
+		Slug: "omitwbauthparam", Name: "Guest WB", RefreshInterval: "10m", Enabled: true, OmitClientAuthToken: true,
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := node.ID
+	if _, err := st.AddSubscriptionEntry(ctx, model.SubscriptionEntry{SubscriptionID: sub.ID, SourceInstanceID: &id, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(st, manager, secrets, "https://example")
+	feed, _, err := service.Standard(ctx, sub.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var linkedURI string
+	for _, line := range strings.Split(feed, "\n") {
+		if strings.HasPrefix(line, "olcrtc://wbstream@") {
+			linkedURI = line
+			break
+		}
+	}
+	if linkedURI == "" {
+		t.Fatalf("WB URI missing from subscription:\n%s", feed)
+	}
+	parsed, err := url.Parse(linkedURI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Query().Has("a") {
+		t.Fatalf("subscription retained omitted auth token parameter: %s", linkedURI)
+	}
+	if parsed.Query().Get("d") != "77.88.8.8:53" || strings.Contains(linkedURI, "private-wb-token") {
+		t.Fatalf("subscription URI was stripped incorrectly: %s", linkedURI)
 	}
 }
 
