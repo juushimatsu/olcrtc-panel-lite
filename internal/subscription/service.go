@@ -301,6 +301,28 @@ func (s *Service) mirrorClient(ctx context.Context) (*mirror.Client, error) {
 	return mirror.NewClient(token, basePath), nil
 }
 
+// MirrorDeepLinkFields returns the three mirror query parameters that the
+// Android client needs to use Yandex Disk as a subscription fallback.
+// All three are empty strings when no active mirror is configured for slug.
+func (s *Service) MirrorDeepLinkFields(ctx context.Context, slug string) (mirrorType, mirrorURL, mirrorKey string, err error) {
+	sub, err := s.store.Subscription(ctx, slug)
+	if err != nil {
+		return "", "", "", err
+	}
+	if !sub.MirrorEnabled || sub.MirrorPublicURL == "" {
+		return "", "", "", nil
+	}
+	encryptedKey, err := s.store.SubscriptionMirrorKey(ctx, sub.ID)
+	if err != nil {
+		return "", "", "", err
+	}
+	plainKey, err := s.secrets.Decrypt(encryptedKey)
+	if err != nil {
+		return "", "", "", err
+	}
+	return "yandex_disk", sub.MirrorPublicURL, plainKey, nil
+}
+
 // GenerateMirrorKey creates and encrypts a per-subscription key.
 func (s *Service) GenerateMirrorKey() (string, string, error) {
 	key, err := mirror.GenerateKey()
