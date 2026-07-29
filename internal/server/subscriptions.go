@@ -466,15 +466,7 @@ func (s *Server) handlePublicSubscriptionOpen(w http.ResponseWriter, r *http.Req
 		return
 	}
 	source := strings.TrimSuffix(publicBaseURL(s.cfg), "/") + "/sub/" + sub.Slug
-	query := url.Values{"url": {source}, "name": {sub.Name}}
-	// Add mirror fields when available so the Android client can fall back to
-	// Yandex Disk when the primary URL is temporarily unreachable.
-	if mType, mURL, mKey, mErr := s.subscriptions.MirrorDeepLinkFields(r.Context(), sub.Slug); mErr == nil && mType != "" {
-		query.Set("mirror_type", mType)
-		query.Set("mirror_url", mURL)
-		query.Set("mirror_key", mKey)
-	}
-	target := url.URL{Scheme: "olcrtc", Host: "subscription", RawQuery: query.Encode()}
+	target := url.URL{Scheme: "olcrtc", Host: "subscription", RawQuery: url.Values{"url": {source}, "name": {sub.Name}}.Encode()}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, target.String(), http.StatusFound)
 }
