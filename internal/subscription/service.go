@@ -324,7 +324,9 @@ func (s *Service) resolveEntryForFormat(ctx context.Context, entry model.Subscri
 	}
 	item, err := s.instances.Get(ctx, *entry.SourceInstanceID)
 	if err != nil {
-		return "", nil, false, err
+		// Linked instance was deleted or is unavailable — skip this entry
+		// rather than failing the entire subscription feed.
+		return "", nil, false, nil
 	}
 	if format == "client" && (!instance.ClientCompatible(item.Provider, item.Transport) ||
 		(item.Provider == "wbstream" && !item.AuthTokenSet && !item.OmitClientAuthToken && !subOmitToken)) {
@@ -355,14 +357,13 @@ func (s *Service) aggregateEntries(ctx context.Context, entries []resolvedEntry)
 		entry := resolved.entry
 		if entry.SourceInstanceID != nil {
 			item := resolved.source
-			var err error
 			if item == nil {
-				var loaded model.Instance
-				loaded, err = s.instances.Get(ctx, *entry.SourceInstanceID)
+				loaded, loadErr := s.instances.Get(ctx, *entry.SourceInstanceID)
+				if loadErr != nil {
+					// Instance was deleted or is unavailable — skip its traffic.
+					continue
+				}
 				item = &loaded
-			}
-			if err != nil {
-				return trafficAggregate{}, err
 			}
 			result.used += item.TotalBytes
 			result.upload += item.UploadBytes

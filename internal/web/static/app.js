@@ -15,6 +15,7 @@ const state = {
   settingsPolling: false,
   expandedInstance: null,
   expandedSubscription: null,
+  hideNetworkInfo: true,
   instanceFilters: { search: '', provider: '', transport: '', status: '', quota: '' },
   logsUnit: 'panel',
   logsLevel: '',
@@ -172,7 +173,7 @@ function renderDashboard(rebuild = true) {
           ${detail('Отправлено', formatBytes(s.traffic.upload_bytes))}${detail('Получено', formatBytes(s.traffic.download_bytes))}${detail('Всего', formatBytes(s.traffic.total_bytes))}${detail('Сетевая скорость с WebRTC overhead', `↑ ${formatBytes(s.network_speed?.egress_bytes_per_second || 0)}/s · ↓ ${formatBytes(s.network_speed?.ingress_bytes_per_second || 0)}/s`)}
         </div></article>
         <article class="panel"><div class="panel-header"><h2>Безопасность и интеграции</h2></div><div class="panel-body detail-list">
-          ${detail('Публичный адрес', `${s.public_ip || 'не задан'}:${s.public_port}`)}${detail('TLS fingerprint', shortFingerprint(s.certificate_fingerprint))}${detail('WB automation', s.wb.installed ? 'Установлена' : (s.wb.supported ? 'Не установлена' : 'Недоступна'))}${detail('Обновления', s.update_configured ? 'Настроены' : 'Manifest не задан')}
+          ${detail('Публичный адрес', state.hideNetworkInfo ? '••••••' : `${s.public_ip || 'не задан'}:${s.public_port}`)}${detail('TLS fingerprint', shortFingerprint(s.certificate_fingerprint))}${detail('WB automation', s.wb.installed ? 'Установлена' : (s.wb.supported ? 'Не установлена' : 'Недоступна'))}${detail('Обновления', s.update_configured ? 'Настроены' : 'Manifest не задан')}
         </div></article>
         <article class="panel" style="grid-column:1/-1"><div class="panel-header"><h2>Быстрые действия</h2></div><div class="panel-body quick-actions"><button class="btn btn-primary" data-action="create-instance">＋ Создать инстанс</button><button class="btn" data-page="subscriptions">≋ Подписки</button><button class="btn" data-page="logs">⌁ Открыть журнал</button><button class="btn" data-action="create-backup">▣ Создать backup</button><button class="btn" data-action="check-updates">↻ Проверить обновления</button><button class="btn" data-page="settings">⚙ Настройки</button></div></article>
       </div>
@@ -203,7 +204,7 @@ function renderInstances() {
   const download = sum(state.instances, 'download_bytes');
   document.querySelector('#page-content').innerHTML = `
     <section class="page">
-      <div class="page-header"><div class="page-title"><h1>Инстансы</h1><p>Один официальный olcRTC process и YAML на каждый инстанс</p></div><div class="header-actions"><button class="btn" data-action="refresh-instances">↻ Обновить</button><button class="btn btn-primary" data-action="create-instance">＋ Создать инстанс</button></div></div>
+      <div class="page-header"><div class="page-title"><h1>Инстансы</h1><p>Один официальный olcRTC process и YAML на каждый инстанс</p></div><div class="header-actions"><button class="btn" data-action="toggle-network-info" title="${state.hideNetworkInfo ? 'Показать IP и порты' : 'Скрыть IP и порты'}">${state.hideNetworkInfo ? '👁 IP' : '🔒 IP'}</button><button class="btn" data-action="start-all-instances">▶ Запустить все</button><button class="btn" data-action="stop-all-instances">■ Остановить все</button><button class="btn" data-action="refresh-instances">↻ Обновить</button><button class="btn btn-primary" data-action="create-instance">＋ Создать инстанс</button></div></div>
       <div class="summary-grid">
         ${summary('Отправлено', formatBytes(upload))}${summary('Получено', formatBytes(download))}${summary('Всего трафика', formatBytes(upload + download))}${summary('Запущено', running)}${summary('Ошибки', failed)}${summary('Всего', state.instances.length)}
       </div>
@@ -221,7 +222,7 @@ function instanceTable(items) {
 function instanceRow(item) {
   const quotaPct = item.quota_bytes ? percent(item.total_bytes, item.quota_bytes) : 0;
   const tokenBadge = item.provider === 'wbstream' && item.auth_token_expired ? ' <span class="chip red" title="Обновите token через Playwright">token истёк</span>' : '';
-  return `<tr><td><button class="expand-button" data-action="expand-instance" data-id="${item.id}" aria-label="Раскрыть ${attr(item.name)}">${state.expandedInstance === item.id ? '−' : '+'}</button></td><td>${item.id}</td><td><strong>${esc(item.name)}</strong>${tokenBadge}</td><td><span class="chip ${item.provider === 'wbstream' ? 'purple' : 'green'}">${esc(item.provider)}</span></td><td><span class="chip blue">${esc(item.transport)}</span></td><td class="mono truncate" style="max-width:190px" title="${attr(item.room_id)}">${esc(item.room_id)}</td><td><span class="chip ${esc(item.status)}">${statusLabel(item.status)}</span></td><td>${formatUptime(item.uptime_seconds)}</td><td class="traffic-cell"><div class="traffic-value"><span>${formatBytes(item.total_bytes)}</span><span>${item.quota_bytes ? `${quotaPct.toFixed(0)}%` : '∞'}</span></div><div class="progress"><span style="width:${Math.min(quotaPct,100)}%"></span></div></td><td>${quotaLabel(item)}</td><td><button class="btn btn-ghost btn-icon" data-action="expand-instance" data-id="${item.id}" aria-label="Меню">⋮</button></td></tr>`;
+  return `<tr><td><button class="expand-button" data-action="expand-instance" data-id="${item.id}" aria-label="Раскрыть ${attr(item.name)}">${state.expandedInstance === item.id ? '−' : '+'}</button></td><td>${item.id}</td><td><strong>${esc(item.name)}</strong>${tokenBadge}</td><td><span class="chip ${item.provider === 'wbstream' ? 'purple' : 'green'}">${esc(item.provider)}</span></td><td><span class="chip blue">${esc(item.transport)}</span></td><td class="mono truncate" style="max-width:190px" title="${state.hideNetworkInfo ? '' : attr(item.room_id)}">${state.hideNetworkInfo ? '••••••' : esc(item.room_id)}</td><td><span class="chip ${esc(item.status)}">${statusLabel(item.status)}</span></td><td>${formatUptime(item.uptime_seconds)}</td><td class="traffic-cell"><div class="traffic-value"><span>${formatBytes(item.total_bytes)}</span><span>${item.quota_bytes ? `${quotaPct.toFixed(0)}%` : '∞'}</span></div><div class="progress"><span style="width:${Math.min(quotaPct,100)}%"></span></div></td><td>${quotaLabel(item)}</td><td><button class="btn btn-ghost btn-icon" data-action="expand-instance" data-id="${item.id}" aria-label="Меню">⋮</button></td></tr>`;
 }
 
 function instanceExpanded(item) {
@@ -234,7 +235,7 @@ function instanceExpanded(item) {
 }
 
 function openInstanceForm(item = null) {
-  const i = item || { provider:'jitsi', transport:'datachannel', dns:'77.88.8.8:53', reset_policy:'never', options:{}, liveness:{} };
+  const i = item || { provider:'jitsi', transport:'datachannel', dns:'77.88.8.8:53', reset_policy:'never', omit_client_auth_token:true, options:{}, liveness:{} };
   openModal(item ? 'Изменить инстанс' : 'Новый инстанс', `
     <form data-form="instance" data-id="${i.id || ''}">
       <div class="form-grid">
@@ -249,7 +250,7 @@ function openInstanceForm(item = null) {
         ${field('quota_gb','Quota, GB',i.quota_bytes ? (i.quota_bytes/1073741824).toFixed(2) : '','number','0 = unlimited')}
         ${field('expires_at','Срок действия',i.expires_at ? localDateTime(i.expires_at) : '','datetime-local','Необязательно')}
         <label class="checkbox"><input type="checkbox" name="debug" ${i.debug ? 'checked' : ''}> Debug logging</label>
-        ${i.provider === 'wbstream' ? `<label class="checkbox"><input type="checkbox" name="omit_client_auth_token" ${i.omit_client_auth_token ? 'checked' : ''}> Не публиковать auth token в Client URI (гостевой вход, без WB аккаунта)</label>` : ''}
+        <label class="checkbox" data-role="omit-token-row"${i.provider !== 'wbstream' ? ' style="display:none"' : ''}><input type="checkbox" name="omit_client_auth_token" ${i.omit_client_auth_token ? 'checked' : ''}> Не публиковать auth token в Client URI (гостевой вход, без WB аккаунта)</label>
       </div>
       <details style="margin-top:18px"><summary class="muted" style="cursor:pointer">Расширенные transport и liveness settings</summary><div class="form-grid" style="margin-top:16px">
         ${field('vp8_fps','VP8 FPS',i.options?.vp8_fps || 60,'number')}${field('vp8_batch','VP8 batch',i.options?.vp8_batch || 64,'number')}${field('sei_fps','SEI FPS',i.options?.sei_fps || 30,'number')}${field('sei_batch','SEI batch',i.options?.sei_batch || 64,'number')}${field('sei_fragment','SEI fragment',i.options?.sei_fragment || 900,'number')}${field('sei_ack_ms','SEI ACK, ms',i.options?.sei_ack_ms || 2000,'number')}
@@ -305,7 +306,7 @@ function entryRow(entry) {
 }
 
 function openSubscriptionForm(sub = null) {
-  const s = sub || { enabled:true, refresh:'10m', color:'#0EA58C', mirror_enabled:false };
+  const s = sub || { enabled:true, refresh:'10m', color:'#0EA58C', mirror_enabled:false, omit_client_auth_token:true };
   openModal(sub ? 'Изменить подписку' : 'Новая подписка', `<form data-form="subscription" data-slug="${attr(s.slug || '')}"><div class="form-grid">${field('name','Название',s.name || '','text','Например: Основная подписка',true)}${field('slug','Slug',s.slug || '','text','Пустой = случайный 128-bit slug',false,!!sub)}${field('refresh','Refresh interval',s.refresh || '10m','text','10m / 6h')} ${field('color','Цвет',s.color || '#0EA58C','color')} ${field('icon','Иконка / emoji',s.icon || '')}<label class="checkbox"><input type="checkbox" name="enabled" ${s.enabled ? 'checked' : ''}> Подписка включена</label><label class="checkbox"><input type="checkbox" name="mirror_enabled" ${s.mirror_enabled ? 'checked' : ''}> Yandex encrypted mirror</label><label class="checkbox"><input type="checkbox" name="omit_client_auth_token" ${s.omit_client_auth_token ? 'checked' : ''}> Не публиковать WB auth token в подписку (клиент входит как гость)</label></div><div class="notice info" style="margin-top:17px">Slug является bearer secret: по URL доступны URI с encryption keys. Не публикуйте его в открытом доступе.</div><div class="form-actions"><button class="btn" type="button" data-action="close-modal">Отмена</button><button class="btn btn-primary" type="submit">Сохранить</button></div></form>`);
 }
 
@@ -397,6 +398,9 @@ app.addEventListener('click', async event => {
     if (action === 'refresh-dashboard') await loadDashboard();
     if (action === 'refresh-instances') await loadInstances();
     if (action === 'create-instance') openInstanceForm();
+    if (action === 'toggle-network-info') { state.hideNetworkInfo = !state.hideNetworkInfo; if (state.page === 'instances') renderInstances(); else if (state.page === 'dashboard') renderDashboard(false); }
+    if (action === 'start-all-instances') { const toStart = state.instances.filter(i => i.status !== 'running'); let started = 0; for (const inst of toStart) { try { await api(`/api/v1/instances/${inst.id}/start`, {method:'POST'}); started++; } catch (_) {} } await loadInstances(); toast('Запуск завершён', `Запущено: ${started} из ${toStart.length}`); }
+    if (action === 'stop-all-instances') { const toStop = state.instances.filter(i => i.status === 'running'); let stopped = 0; for (const inst of toStop) { try { await api(`/api/v1/instances/${inst.id}/stop`, {method:'POST'}); stopped++; } catch (_) {} } await loadInstances(); toast('Остановка завершена', `Остановлено: ${stopped} из ${toStop.length}`); }
     if (action === 'expand-instance') { state.expandedInstance = state.expandedInstance === Number(target.dataset.id) ? null : Number(target.dataset.id); renderInstances(); }
     if (action === 'edit-instance') openInstanceForm(state.instances.find(i=>i.id===Number(target.dataset.id)));
     if (action?.startsWith('instance-')) await handleInstanceAction(action, target);
@@ -472,6 +476,7 @@ app.addEventListener('change', event => {
   if (event.target.dataset.role === 'logs-lines') refreshLogs();
   if (event.target.dataset.role === 'logs-level') { state.logsLevel=event.target.value;refreshLogs(); }
   if (event.target.dataset.role === 'entry-source') { document.querySelector('[data-entry-linked]')?.classList.toggle('hidden',event.target.value!=='linked');document.querySelector('[data-entry-manual]')?.classList.toggle('hidden',event.target.value!=='manual'); }
+  if (event.target.name === 'provider') { const row = event.target.closest('form')?.querySelector('[data-role="omit-token-row"]'); if (row) row.style.display = event.target.value === 'wbstream' ? '' : 'none'; }
 });
 
 window.addEventListener('hashchange', () => { const page=location.hash.replace('#','') || 'dashboard';if(page!==state.page)navigate(page,false); });

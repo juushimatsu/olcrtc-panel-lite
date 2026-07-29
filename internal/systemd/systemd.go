@@ -71,7 +71,7 @@ func (m *Manager) Status(ctx context.Context, id int64) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	out, err := exec.CommandContext(ctx, "systemctl", "show", name, "--property=ActiveState,SubState,ActiveEnterTimestampMonotonic,IPIngressBytes,IPEgressBytes").Output()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", name, "--property=ActiveState,SubState,ActiveEnterTimestamp,IPIngressBytes,IPEgressBytes").Output()
 	if err != nil {
 		return Status{State: "unknown"}, fmt.Errorf("systemctl show: %w", err)
 	}
@@ -79,29 +79,39 @@ func (m *Manager) Status(ctx context.Context, id int64) (Status, error) {
 	status := Status{State: "unknown"}
 	status.State = mapState(values["ActiveState"])
 	status.SubState = values["SubState"]
-	entered, _ := strconv.ParseInt(values["ActiveEnterTimestampMonotonic"], 10, 64)
-	if entered > 0 {
-		status.UptimeSeconds = uptimeFromMonotonic(entered)
+	if status.State == "running" {
+		status.UptimeSeconds = uptimeFromWallClock(values["ActiveEnterTimestamp"])
 	}
 	status.IngressBytes, _ = strconv.ParseInt(values["IPIngressBytes"], 10, 64)
 	status.EgressBytes, _ = strconv.ParseInt(values["IPEgressBytes"], 10, 64)
 	return status, nil
 }
 
-func uptimeFromMonotonic(enteredMicros int64) int64 {
-	b, err := exec.Command("cat", "/proc/uptime").Output()
-	if err != nil {
+// uptimeFromWallClock parses the systemd ActiveEnterTimestamp wall-clock value
+// and returns elapsed seconds.  The format systemd emits is
+// "Mon 2006-01-02 15:04:05 MST" (en_US locale) or an empty/n/a string for
+// units that have never been active.
+func uptimeFromWallClock(entered string) int64 {
+	entered = strings.TrimSpace(entered)
+	if entered == "" || entered == "n/a" {
 		return 0
 	}
-	var seconds float64
-	if _, err := fmt.Sscanf(string(b), "%f", &seconds); err != nil {
-		return 0
+	// systemd prints the day-of-week abbreviated name before the date.
+	// Try both with and without day prefix to be locale-tolerant.
+	formats := []string{
+		"Mon 2006-01-02 15:04:05 MST",
+		"2006-01-02 15:04:05 MST",
 	}
-	currentMicros := int64(seconds * 1_000_000)
-	if currentMicros <= enteredMicros {
-		return 0
+	for _, layout := range formats {
+		t, err := time.Parse(layout, entered)
+		if err == nil {
+			if s := int64(time.Since(t).Seconds()); s > 0 {
+				return s
+			}
+			return 0
+		}
 	}
-	return (currentMicros - enteredMicros) / 1_000_000
+	return 0
 }
 
 func mapState(active string) string {
