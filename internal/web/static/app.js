@@ -96,6 +96,7 @@ function shell(content) {
         <div class="sidebar-brand"><div class="brand-mark">O</div><div><strong>olcRTC Panel</strong><span>lite edition</span></div></div>
         <nav class="nav">${navItems.map(([id, icon, label]) => `<button class="nav-button ${state.page === id ? 'active' : ''}" data-page="${id}"><span class="nav-icon">${icon}</span>${label}</button>`).join('')}</nav>
         <div class="sidebar-bottom">
+          <a class="nav-button" href="https://github.com/juushimatsu/olcrtc-panel-lite" target="_blank" rel="noopener noreferrer"><span class="nav-icon" aria-hidden="true">↗</span>GitHub панели</a>
           <button class="nav-button" data-action="toggle-theme"><span class="nav-icon">◐</span>Сменить тему</button>
           <button class="nav-button" data-action="logout"><span class="nav-icon">↪</span>Выход</button>
           <div class="sidebar-version">Пользователь: ${esc(state.user || '')}</div>
@@ -265,12 +266,34 @@ function openInstanceForm(item = null) {
     </form>`, true);
 }
 
+function normalizeRoomID(provider, room) {
+  const value = String(room ?? '').trim();
+  if (provider !== 'telemost') return value;
+  let candidate = value;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === 'https:' && parsed.hostname.toLowerCase() === 'telemost.yandex.ru' && !parsed.port && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && parsed.pathname.startsWith('/j/')) {
+      const roomID = decodeURIComponent(parsed.pathname.slice(3));
+      if (roomID && !roomID.includes('/')) candidate = roomID;
+    }
+  } catch (_) {}
+  const compact = candidate.replaceAll(' ', '');
+  return /^\d+$/.test(compact) ? compact : value;
+}
+
+function normalizeInstanceRoomField(event) {
+  const form = event.target.closest?.('form[data-form="instance"]');
+  if (!form || !['provider', 'room_id'].includes(event.target.name)) return;
+  form.elements.room_id.value = normalizeRoomID(form.elements.provider.value, form.elements.room_id.value);
+}
+
 function instancePayload(form) {
   const d = new FormData(form);
   const num = key => Number(d.get(key) || 0);
   const expires = d.get('expires_at');
+  const provider = d.get('provider');
   return {
-    name: d.get('name').trim(), provider: d.get('provider'), transport: d.get('transport'), room_id: d.get('room_id').trim(), dns: d.get('dns').trim(), outbound_proxy: d.get('outbound_proxy'), auth_token: d.get('auth_token'), reset_policy: d.get('reset_policy'), quota_bytes: Math.max(0, Math.round(num('quota_gb') * 1073741824)), expires_at: expires ? new Date(expires).toISOString() : null, debug: d.has('debug'), omit_client_auth_token: d.has('omit_client_auth_token'),
+    name: d.get('name').trim(), provider, transport: d.get('transport'), room_id: normalizeRoomID(provider, d.get('room_id')), dns: d.get('dns').trim(), outbound_proxy: d.get('outbound_proxy'), auth_token: d.get('auth_token'), reset_policy: d.get('reset_policy'), quota_bytes: Math.max(0, Math.round(num('quota_gb') * 1073741824)), expires_at: expires ? new Date(expires).toISOString() : null, debug: d.has('debug'), omit_client_auth_token: d.has('omit_client_auth_token'),
     options: { vp8_fps:num('vp8_fps'), vp8_batch:num('vp8_batch'), sei_fps:num('sei_fps'), sei_batch:num('sei_batch'), sei_fragment:num('sei_fragment'), sei_ack_ms:num('sei_ack_ms'), video_width:num('video_width'), video_height:num('video_height'), video_fps:num('video_fps'), video_bitrate:d.get('video_bitrate'), video_hw:d.get('video_hw'), video_codec:d.get('video_codec'), video_qr_recovery:'low', video_tile_module:4, video_tile_rs:20 },
     liveness: { interval:d.get('liveness_interval'), timeout:d.get('liveness_timeout'), failures:num('liveness_failures') }, max_session_duration:d.get('max_session_duration'), traffic_options:{ max_payload_size:0, min_delay:'', max_delay:'' }
   };
@@ -438,6 +461,9 @@ app.addEventListener('click', async event => {
   } catch (error) { toast('Операция не выполнена', error.message, 'error'); }
 });
 
+app.addEventListener('focusout', normalizeInstanceRoomField);
+app.addEventListener('change', normalizeInstanceRoomField);
+
 app.addEventListener('submit', async event => {
   const form = event.target.closest('form[data-form]');
   if (!form) return;
@@ -493,7 +519,7 @@ async function handleInstanceAction(action, target) {
     await loadInstances();toast('Операция выполнена');return;
   }
   if (simple==='delete') { const name=prompt(`Для удаления введите точное имя: ${item.name}`);if(name!==item.name)return;await api(`/api/v1/instances/${id}`,{method:'DELETE',body:JSON.stringify({confirm_name:name})});await loadInstances();toast('Инстанс удалён'); }
-  if (simple==='change-room') { const room=prompt('Новый Room ID / URL',item.room_id);if(!room)return;await api(`/api/v1/instances/${id}/change-room`,{method:'POST',body:JSON.stringify({room_id:room})});await loadInstances();toast('Room ID изменён'); }
+  if (simple==='change-room') { const value=prompt('Новый Room ID / URL',item.room_id);if(!value)return;const room=normalizeRoomID(item.provider,value);if(!room)return;await api(`/api/v1/instances/${id}/change-room`,{method:'POST',body:JSON.stringify({room_id:room})});await loadInstances();toast('Room ID изменён'); }
   if (simple==='uri') { const format=target.dataset.format||'olcbox';const result=await api(`/api/v1/instances/${id}/uri?format=${format}`);openQRPayloadModal(`${format==='client'?'OLCRTC Client':'OLCBOX'} URI`,'',result.uri,format==='client'?maskClientURI:value=>value); }
   if (simple==='qr') await showInstanceQR(id,target.dataset.format||'olcbox');
   if (simple==='logs') { state.logsUnit=`instance:${id}`;await navigate('logs'); }

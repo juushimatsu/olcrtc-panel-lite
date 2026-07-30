@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -104,12 +105,17 @@ func fetchGitHubReleases(ctx context.Context, client *http.Client, apiURL, curre
 			Name:        name,
 			PublishedAt: release.PublishedAt,
 			URL:         release.HTMLURL,
-			Latest:      len(items) == 0,
 			Current:     release.TagName == currentBundle,
 		})
 		if len(items) == 10 {
 			break
 		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].PublishedAt.After(items[j].PublishedAt)
+	})
+	if len(items) > 0 {
+		items[0].Latest = true
 	}
 	return items, nil
 }

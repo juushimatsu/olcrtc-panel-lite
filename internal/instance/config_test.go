@@ -189,3 +189,36 @@ func TestValidateRejectsYAMLInjection(t *testing.T) {
 		t.Fatal("multiline name accepted")
 	}
 }
+
+func TestNormalizeRoomID(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		room     string
+		want     string
+	}{
+		{name: "plain telemost ID", provider: "telemost", room: "02775931947176", want: "02775931947176"},
+		{name: "grouped telemost ID", provider: "telemost", room: "0277 5931 9471 76", want: "02775931947176"},
+		{name: "telemost URL", provider: "telemost", room: "https://telemost.yandex.ru/j/02775931947176", want: "02775931947176"},
+		{name: "other provider", provider: "jitsi", room: "https://telemost.yandex.ru/j/02775931947176", want: "https://telemost.yandex.ru/j/02775931947176"},
+		{name: "other host", provider: "telemost", room: "https://example.com/j/02775931947176", want: "https://example.com/j/02775931947176"},
+		{name: "URL with query", provider: "telemost", room: "https://telemost.yandex.ru/j/02775931947176?from=copy", want: "https://telemost.yandex.ru/j/02775931947176?from=copy"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := NormalizeRoomID(test.provider, test.room); got != test.want {
+				t.Fatalf("NormalizeRoomID() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestApplyDefaultsNormalizesTelemostRoomID(t *testing.T) {
+	item := validInstance()
+	item.Provider = "telemost"
+	item.RoomID = "0277 5931 9471 76"
+	ApplyDefaults(&item)
+	if item.RoomID != "02775931947176" {
+		t.Fatalf("RoomID = %q, want canonical Telemost ID", item.RoomID)
+	}
+}

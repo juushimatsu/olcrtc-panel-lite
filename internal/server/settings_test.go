@@ -40,6 +40,31 @@ func TestFetchGitHubReleases(t *testing.T) {
 	}
 }
 
+func TestFetchGitHubReleasesMarksNewestPublishedReleaseLatest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"tag_name":"bundle-old","name":"Older","html_url":"https://example/old","published_at":"2026-07-16T00:00:00Z","draft":false},
+			{"tag_name":"bundle-new","name":"Newest","html_url":"https://example/new","published_at":"2026-07-18T00:00:00Z","draft":false},
+			{"tag_name":"bundle-middle","name":"Middle","html_url":"https://example/middle","published_at":"2026-07-17T00:00:00Z","draft":false}
+		]`))
+	}))
+	defer server.Close()
+
+	items, err := fetchGitHubReleases(context.Background(), server.Client(), server.URL, "bundle-middle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 || items[0].BundleID != "bundle-new" || !items[0].Latest || items[1].BundleID != "bundle-middle" || !items[1].Current {
+		t.Fatalf("unexpected release order or markers: %#v", items)
+	}
+	for _, item := range items[1:] {
+		if item.Latest {
+			t.Fatalf("older release marked latest: %#v", item)
+		}
+	}
+}
+
 func TestOperationProgressFromStateFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	state := []byte(`{"phase":"browser","message":"Installing Chromium","percent":75,"updated_at":` + strconv.FormatInt(time.Now().Unix(), 10) + `}`)

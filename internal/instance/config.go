@@ -17,6 +17,33 @@ import (
 var providers = map[string]bool{"jitsi": true, "telemost": true, "wbstream": true}
 var transports = map[string]bool{"datachannel": true, "vp8channel": true, "seichannel": true, "videochannel": true}
 
+// NormalizeRoomID converts supported provider links and display formats to the upstream value.
+func NormalizeRoomID(provider, room string) string {
+	if provider != "telemost" {
+		return room
+	}
+	value := strings.TrimSpace(room)
+	candidate := value
+	if parsed, err := url.ParseRequestURI(value); err == nil &&
+		strings.EqualFold(parsed.Scheme, "https") &&
+		strings.EqualFold(parsed.Host, "telemost.yandex.ru") &&
+		parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == "" {
+		if roomID, ok := strings.CutPrefix(parsed.Path, "/j/"); ok && roomID != "" && !strings.Contains(roomID, "/") {
+			candidate = roomID
+		}
+	}
+	compact := strings.ReplaceAll(candidate, " ", "")
+	if compact == "" {
+		return value
+	}
+	for _, digit := range compact {
+		if digit < '0' || digit > '9' {
+			return value
+		}
+	}
+	return compact
+}
+
 // Proxy is the normalized official upstream SOCKS proxy block.
 type Proxy struct {
 	Addr string
@@ -27,6 +54,7 @@ type Proxy struct {
 
 // ApplyDefaults fills values from the current official upstream defaults.
 func ApplyDefaults(item *model.Instance) {
+	item.RoomID = NormalizeRoomID(item.Provider, item.RoomID)
 	if item.DNS == "" {
 		item.DNS = "8.8.8.8:53"
 	}
