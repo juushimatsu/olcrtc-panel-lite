@@ -86,3 +86,31 @@ func TestSidebarLinksToPanelRepository(t *testing.T) {
 		t.Fatal("sidebar repository link is missing or unsafe")
 	}
 }
+
+func TestDashboardVisibilityUpdateNoticeAndBulkMirrorActions(t *testing.T) {
+	app, err := fs.ReadFile(Static, "static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	styles, err := fs.ReadFile(Static, "static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(app)
+	for _, required := range []string{
+		"function networkVisibilityButton()",
+		"&#128065;",
+		"function loadUpdateNotice()",
+		"data-action=\"dismiss-update-notice\"",
+		"state.updateNoticeDismissed",
+		"function syncAllMirrors()",
+		"data-action=\"sync-mirror-all\"",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("UI feature is missing %q", required)
+		}
+	}
+	if !strings.Contains(string(styles), ".update-notice {") {
+		t.Fatal("update notice styles are missing")
+	}
+}

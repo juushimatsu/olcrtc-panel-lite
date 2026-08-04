@@ -12,6 +12,10 @@ const state = {
   releases: null,
   wbOperation: { state: 'idle', percent: 0 },
   updateOperation: { state: 'idle', percent: 0 },
+  updateNoticeCatalog: null,
+  updateNoticeLoading: false,
+  updateNoticeDismissed: false,
+  mirrorSyncRunning: false,
   settingsPolling: false,
   expandedInstance: null,
   expandedSubscription: null,
@@ -104,7 +108,7 @@ function shell(content) {
       </aside>
       <div>
         <header class="mobile-topbar"><button class="icon-button" data-action="drawer" aria-label="Открыть меню">☰</button><strong>olcRTC Panel</strong><button class="icon-button" data-action="toggle-theme" aria-label="Сменить тему">◐</button></header>
-        <main class="main"><div id="page-content">${content}</div></main>
+        <main class="main"><div id="update-notice" aria-live="polite"></div><div id="page-content">${content}</div></main>
       </div>
     </div>
     <div id="modal-root"></div>
@@ -127,6 +131,44 @@ async function navigate(page, push = true) {
   } catch (error) {
     renderPageError(error);
   }
+  loadUpdateNotice();
+}
+
+function latestAvailableRelease(catalog = state.updateNoticeCatalog) {
+  if (!catalog?.configured || catalog.error) return null;
+  const items = [...(catalog.items || [])].sort((a, b) => new Date(b.published_at) - new Date(a.published_at));
+  const latest = items.find(item => item.latest) || items[0];
+  return latest && !latest.current ? latest : null;
+}
+
+async function loadUpdateNotice() {
+  const root = document.querySelector('#update-notice');
+  if (!root || state.updateNoticeLoading) return;
+  if (state.updateNoticeCatalog) {
+    renderUpdateNotice();
+    return;
+  }
+  state.updateNoticeLoading = true;
+  try {
+    state.updateNoticeCatalog = await api('/api/v1/updates/releases');
+  } catch (_) {
+    state.updateNoticeCatalog = { configured: false, items: [] };
+  } finally {
+    state.updateNoticeLoading = false;
+    renderUpdateNotice();
+  }
+}
+
+function renderUpdateNotice() {
+  const root = document.querySelector('#update-notice');
+  if (!root) return;
+  const release = latestAvailableRelease();
+  if (state.updateNoticeDismissed || !release) {
+    root.innerHTML = '';
+    return;
+  }
+  const published = release.published_at ? formatDate(release.published_at) : '';
+  root.innerHTML = `<aside class="update-notice" role="status"><div class="update-notice-copy"><strong>Доступно обновление</strong><span class="mono">${esc(release.bundle_id || release.name || 'новый release')}${published ? ` · ${esc(published)}` : ''}</span></div><div class="update-notice-actions"><button class="btn btn-small" data-action="update-notice-open">Подробнее</button><button class="btn btn-icon update-notice-dismiss" data-action="dismiss-update-notice" aria-label="Скрыть уведомление" title="Скрыть уведомление">×</button></div></aside>`;
 }
 
 function pageSkeleton(page) {
@@ -156,7 +198,7 @@ function renderDashboard(rebuild = true) {
   const cpuPct = clamp(m.cpu_percent || (m.load_1 / Math.max(m.cpu_cores, 1) * 100), 0, 100);
   const body = `
     <section class="page">
-      <div class="page-header"><div class="page-title"><h1>Дашборд</h1><p>Состояние VPS, панели и управляемых процессов</p></div><div class="header-actions"><button class="btn" data-action="refresh-dashboard">↻ Обновить</button><button class="btn btn-primary" data-action="create-instance">＋ Инстанс</button></div></div>
+      <div class="page-header"><div class="page-title"><h1>Дашборд</h1><p>Состояние VPS, панели и управляемых процессов</p></div><div class="header-actions">${networkVisibilityButton()}<button class="btn" data-action="refresh-dashboard">↻ Обновить</button><button class="btn btn-primary" data-action="create-instance">＋ Инстанс</button></div></div>
       <div class="panel gauge-grid">
         ${gauge(cpuPct, `ЦП: ${m.cpu_cores} ${plural(m.cpu_cores, 'ядро', 'ядра', 'ядер')}`)}
         ${gauge(memPct, `ОЗУ: ${formatBytes(m.memory_used)} / ${formatBytes(m.memory_total)}`)}
@@ -186,6 +228,11 @@ function gauge(value, caption) {
   return `<div class="gauge-item"><div class="gauge" style="--value:${value.toFixed(1)}"><strong>${value.toFixed(1)}%</strong></div><div class="gauge-caption">${esc(caption)}</div></div>`;
 }
 
+function networkVisibilityButton() {
+  const label = state.hideNetworkInfo ? 'Показать IP и Room ID' : 'Скрыть IP и Room ID';
+  return `<button class="btn btn-icon" data-action="toggle-network-info" title="${attr(label)}" aria-label="${attr(label)}" aria-pressed="${state.hideNetworkInfo ? 'false' : 'true'}">&#128065;</button>`;
+}
+
 async function loadInstances() {
   const result = await api('/api/v1/instances');
   state.instances = result.items || [];
@@ -205,7 +252,7 @@ function renderInstances() {
   const download = sum(state.instances, 'download_bytes');
   document.querySelector('#page-content').innerHTML = `
     <section class="page">
-      <div class="page-header"><div class="page-title"><h1>Инстансы</h1><p>Один официальный olcRTC process и YAML на каждый инстанс</p></div><div class="header-actions"><button class="btn" data-action="toggle-network-info" title="${state.hideNetworkInfo ? 'Показать IP и порты' : 'Скрыть IP и порты'}">${state.hideNetworkInfo ? '👁 IP' : '🔒 IP'}</button><button class="btn" data-action="start-all-instances">▶ Запустить все</button><button class="btn" data-action="stop-all-instances">■ Остановить все</button><button class="btn" data-action="refresh-instances">↻ Обновить</button><button class="btn btn-primary" data-action="create-instance">＋ Создать инстанс</button></div></div>
+      <div class="page-header"><div class="page-title"><h1>Инстансы</h1><p>Один официальный olcRTC process и YAML на каждый инстанс</p></div><div class="header-actions">${networkVisibilityButton()}<button class="btn" data-action="start-all-instances">▶ Запустить все</button><button class="btn" data-action="stop-all-instances">■ Остановить все</button><button class="btn" data-action="refresh-instances">↻ Обновить</button><button class="btn btn-primary" data-action="create-instance">＋ Создать инстанс</button></div></div>
       <div class="summary-grid">
         ${summary('Отправлено', formatBytes(upload))}${summary('Получено', formatBytes(download))}${summary('Всего трафика', formatBytes(upload + download))}${summary('Запущено', running)}${summary('Ошибки', failed)}${summary('Всего', state.instances.length)}
       </div>
@@ -306,9 +353,40 @@ async function loadSubscriptions() {
   renderSubscriptions();
 }
 
+async function syncAllMirrors() {
+  const targets = state.subscriptions.filter(subscription => subscription.mirror_enabled);
+  if (!targets.length) {
+    toast('Нет активных mirror', 'Включите Yandex mirror хотя бы для одной подписки.', 'warning');
+    return;
+  }
+  if (!confirm(`Синхронизировать mirror для ${targets.length} подписок?`)) return;
+  state.mirrorSyncRunning = true;
+  renderSubscriptions();
+  let synced = 0;
+  const failed = [];
+  try {
+    for (const subscription of targets) {
+      try {
+        await api(`/api/v1/subscriptions/${encodeURIComponent(subscription.slug)}/mirror/sync`, {method:'POST'});
+        synced++;
+      } catch (error) {
+        failed.push(`${subscription.name}: ${error.message}`);
+      }
+    }
+    await loadSubscriptions();
+    const details = `Успешно: ${synced}; ошибок: ${failed.length}`;
+    toast(failed.length ? 'Синхронизация завершена с ошибками' : 'Все mirror синхронизированы', failed.length ? `${details}. ${failed.join('; ')}` : details, failed.length ? 'warning' : 'success');
+  } catch (error) {
+    toast('Синхронизация mirror не завершена', error.message, 'error');
+  } finally {
+    state.mirrorSyncRunning = false;
+    if (state.page === 'subscriptions') renderSubscriptions();
+  }
+}
+
 function renderSubscriptions() {
   document.querySelector('#page-content').innerHTML = `
-    <section class="page"><div class="page-header"><div class="page-title"><h1>Подписки</h1><p>Одна подписка публикуется в форматах OLCRTC Client и OLCBOX</p></div><div class="header-actions"><button class="btn" data-action="import-subscriptions">⇧ Импорт</button><button class="btn" data-action="export-subscriptions">⇩ Экспорт</button><button class="btn btn-primary" data-action="create-subscription">＋ Подписка</button></div></div><div class="notice" style="margin-bottom:16px">OLCRTC Client получает compact URI и optional Yandex mirror. OLCBOX получает отдельный plain-text <code>sub.md</code> endpoint с обычными <code>olcrtc://</code> URI.</div>
+    <section class="page"><div class="page-header"><div class="page-title"><h1>Подписки</h1><p>Одна подписка публикуется в форматах OLCRTC Client и OLCBOX</p></div><div class="header-actions"><button class="btn" data-action="sync-mirror-all" ${state.mirrorSyncRunning ? 'disabled' : ''}>↻ Sync mirror all</button><button class="btn" data-action="import-subscriptions">⇧ Импорт</button><button class="btn" data-action="export-subscriptions">⇩ Экспорт</button><button class="btn btn-primary" data-action="create-subscription">＋ Подписка</button></div></div><div class="notice" style="margin-bottom:16px">OLCRTC Client получает compact URI и optional Yandex mirror. OLCBOX получает отдельный plain-text <code>sub.md</code> endpoint с обычными <code>olcrtc://</code> URI.</div>
     ${state.subscriptions.length ? `<div class="subscription-list">${state.subscriptions.map(subscriptionCard).join('')}</div>` : emptyState('≋','Подписок пока нет','Создайте bearer-secret URL и добавьте linked instances или manual URI.','<button class="btn btn-primary" data-action="create-subscription">Создать подписку</button>')}
     </section>`;
 }
@@ -417,7 +495,9 @@ app.addEventListener('click', async event => {
     if (action === 'drawer') document.body.classList.toggle('drawer-open');
     if (action === 'close-modal') closeModal();
     if (action === 'toggle-theme') { const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; applyTheme(theme); localStorage.setItem('olcrtc-theme',theme); }
-    if (action === 'logout') { await api('/api/v1/auth/logout',{method:'POST'}); state.user=null;renderLogin(); }
+    if (action === 'dismiss-update-notice') { state.updateNoticeDismissed = true; renderUpdateNotice(); }
+    if (action === 'update-notice-open') await navigate('settings');
+    if (action === 'logout') { await api('/api/v1/auth/logout',{method:'POST'}); state.user=null;state.updateNoticeCatalog=null;state.updateNoticeDismissed=false;renderLogin(); }
     if (action === 'refresh-dashboard') await loadDashboard();
     if (action === 'refresh-instances') await loadInstances();
     if (action === 'create-instance') openInstanceForm();
@@ -437,6 +517,7 @@ app.addEventListener('click', async event => {
     if (action === 'delete-subscription') { if (confirm(`Удалить подписку ${target.dataset.slug}? Yandex mirror будет удалён первым; при ошибке удаление подписки отменится.`)) { await api(`/api/v1/subscriptions/${target.dataset.slug}`,{method:'DELETE'}); await loadSubscriptions(); toast('Подписка и Yandex mirror удалены'); } }
     if (action === 'subscription-qr') await showSubscriptionQR(target.dataset.slug, target.dataset.format || 'client');
     if (action === 'sync-mirror') { await api(`/api/v1/subscriptions/${target.dataset.slug}/mirror/sync`,{method:'POST'}); await loadSubscriptions(); toast('Mirror синхронизирован'); }
+    if (action === 'sync-mirror-all') await syncAllMirrors();
     if (action === 'export-subscriptions') downloadAuthenticated('/api/v1/subscriptions/export','olcrtc-subscriptions.json');
     if (action === 'import-subscriptions') importSubscriptions();
     if (action === 'copy') { await copyText(target.dataset.value); toast('Скопировано'); }
@@ -471,7 +552,7 @@ app.addEventListener('submit', async event => {
   const submit = form.querySelector('[type="submit"]'); if (submit) submit.disabled = true;
   try {
     if (form.dataset.form === 'login') {
-      const d=new FormData(form);const result=await api('/api/v1/auth/login',{method:'POST',body:JSON.stringify({username:d.get('username'),password:d.get('password')})});state.user=result.username;state.csrf=result.csrf_token;await navigate('dashboard');
+      const d=new FormData(form);const result=await api('/api/v1/auth/login',{method:'POST',body:JSON.stringify({username:d.get('username'),password:d.get('password')})});state.user=result.username;state.csrf=result.csrf_token;state.updateNoticeCatalog=null;state.updateNoticeDismissed=false;await navigate('dashboard');
     }
     if (form.dataset.form === 'instance') {
       const payload=instancePayload(form);const id=form.dataset.id;const result=await api(id?`/api/v1/instances/${id}`:'/api/v1/instances',{method:id?'PUT':'POST',body:JSON.stringify(payload)});closeModal();await loadInstances();toast(id?'Инстанс обновлён':'Инстанс создан',result.warning || 'Конфигурация сохранена');

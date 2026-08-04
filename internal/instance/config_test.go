@@ -41,6 +41,18 @@ func TestStandardURITransportMapping(t *testing.T) {
 	}
 }
 
+func TestStandardURISanitizesReservedComment(t *testing.T) {
+	item := validInstance()
+	got, err := StandardURI(item, strings.Repeat("a", 64), "node #1 / old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "olcrtc://jitsi?vp8channel@https://meet.example/room#" + strings.Repeat("a", 64) + "$node -1 / old"
+	if got != want {
+		t.Fatalf("URI = %q, want %q", got, want)
+	}
+}
+
 func TestURIRejectsReservedSeparator(t *testing.T) {
 	item := validInstance()
 	item.RoomID = "room#leak"

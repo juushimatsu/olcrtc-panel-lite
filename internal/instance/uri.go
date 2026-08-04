@@ -14,11 +14,29 @@ import (
 
 // StandardURI renders the OLCBOX URI format without private auth tokens.
 func StandardURI(item model.Instance, key, comment string) (string, error) {
+	comment = standardComment(comment)
 	if err := validateURIFields(item, key, comment); err != nil {
 		return "", err
 	}
 	payload := standardPayload(item)
 	return "olcrtc://" + item.Provider + "?" + item.Transport + payload + "@" + item.RoomID + "#" + key + "$" + comment, nil
+}
+
+// standardComment keeps display metadata from becoming an OLCBOX delimiter.
+// Instance names are valid UI text and may contain separators used by the URI.
+func standardComment(comment string) string {
+	var builder strings.Builder
+	for _, r := range comment {
+		switch {
+		case strings.ContainsRune("?<>@#$", r):
+			builder.WriteRune('-')
+		case r == '\r' || r == '\n':
+			builder.WriteRune(' ')
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(builder.String()), " ")
 }
 
 func standardPayload(item model.Instance) string {
