@@ -283,7 +283,17 @@ function instanceExpanded(item) {
 }
 
 function openInstanceForm(item = null) {
-  const i = item || { provider:'jitsi', transport:'datachannel', dns:'77.88.8.8:53', reset_policy:'never', omit_client_auth_token:true, options:{}, liveness:{} };
+  const i = item || { provider:'jitsi', transport:'datachannel', dns:'8.8.8.8:53', reset_policy:'never', omit_client_auth_token:true, options:{}, liveness:{} };
+  const dns = String(i.dns || '8.8.8.8:53').trim();
+  const dnsPresets = [
+    ['8.8.8.8:53', 'Google (8.8.8.8)'],
+    ['1.1.1.1:53', 'Cloudflare (1.1.1.1)'],
+    ['77.88.8.8:53', 'Yandex (77.88.8.8)'],
+    ['9.9.9.9:53', 'Quad9 (9.9.9.9)'],
+    ['94.140.14.14:53', 'AdGuard (94.140.14.14)'],
+  ];
+  const dnsPreset = dnsPresets.some(([value]) => value === dns) ? dns : 'custom';
+  const dnsOptions = dnsPresets.map(([value, label]) => `<option value="${attr(value)}" ${dnsPreset === value ? 'selected' : ''}>${esc(label)}</option>`).join('');
   openModal(item ? 'Изменить инстанс' : 'Новый инстанс', `
     <form data-form="instance" data-id="${i.id || ''}">
       <div class="form-grid">
@@ -291,7 +301,8 @@ function openInstanceForm(item = null) {
         <div class="field"><label>Provider</label><select class="select" name="provider">${options(['jitsi','telemost','wbstream'],i.provider)}</select></div>
         <div class="field"><label>Transport</label><select class="select" name="transport">${options(['datachannel','vp8channel','seichannel','videochannel'],i.transport)}</select></div>
         <div class="field"><label for="f-room_id">Room ID / URL</label><input class="input" id="f-room_id" name="room_id" list="jitsi-presets" value="${attr(i.room_id || '')}" placeholder="https://meet.example/room" required><datalist id="jitsi-presets"><option value="https://meet.jit.si/"><option value="https://meet.small-dm.ru/"><option value="https://meet1.arbitr.ru/"><option value="https://meet.handyweb.org/"></datalist><button class="btn btn-small" type="button" data-action="generate-jitsi-room">Случайная Jitsi room</button></div>
-        ${field('dns','DNS upstream',i.dns || '77.88.8.8:53','text','77.88.8.8:53',true)}
+        <div class="field"><label for="f-dns-preset">DNS-сервер</label><select class="select" id="f-dns-preset" name="dns_preset" data-role="dns-preset">${dnsOptions}<option value="custom" ${dnsPreset === 'custom' ? 'selected' : ''}>Другой DNS</option></select></div>
+        <div class="field" data-role="dns-custom-row"${dnsPreset === 'custom' ? '' : ' hidden'}><label for="f-dns-custom">Свой DNS (IP:порт)</label><input class="input" id="f-dns-custom" name="dns_custom" type="text" value="${attr(dnsPreset === 'custom' ? dns : '')}" placeholder="9.9.9.9:53" ${dnsPreset === 'custom' ? 'required' : 'disabled'}><span class="field-hint">Укажите IPv4- или IPv6-адрес с портом 53.</span></div>
         ${field('outbound_proxy','Outbound SOCKS5 / WARP','','password',item ? 'Оставьте пустым, чтобы не менять' : 'socks5://user:pass@host:port')}
         ${field('auth_token','WB account token','','password',item ? 'Оставьте пустым, чтобы не менять' : 'Только WB; входит в QR OLCRTC Client')}
         <div class="field"><label>Traffic reset</label><select class="select" name="reset_policy">${options(['never','daily','weekly','monthly','manual'],i.reset_policy)}</select></div>
@@ -339,8 +350,10 @@ function instancePayload(form) {
   const num = key => Number(d.get(key) || 0);
   const expires = d.get('expires_at');
   const provider = d.get('provider');
+  const dnsPreset = String(d.get('dns_preset') || '').trim();
+  const dns = dnsPreset === 'custom' ? String(d.get('dns_custom') || '').trim() : dnsPreset || '8.8.8.8:53';
   return {
-    name: d.get('name').trim(), provider, transport: d.get('transport'), room_id: normalizeRoomID(provider, d.get('room_id')), dns: d.get('dns').trim(), outbound_proxy: d.get('outbound_proxy'), auth_token: d.get('auth_token'), reset_policy: d.get('reset_policy'), quota_bytes: Math.max(0, Math.round(num('quota_gb') * 1073741824)), expires_at: expires ? new Date(expires).toISOString() : null, debug: d.has('debug'), omit_client_auth_token: d.has('omit_client_auth_token'),
+    name: d.get('name').trim(), provider, transport: d.get('transport'), room_id: normalizeRoomID(provider, d.get('room_id')), dns, outbound_proxy: d.get('outbound_proxy'), auth_token: d.get('auth_token'), reset_policy: d.get('reset_policy'), quota_bytes: Math.max(0, Math.round(num('quota_gb') * 1073741824)), expires_at: expires ? new Date(expires).toISOString() : null, debug: d.has('debug'), omit_client_auth_token: d.has('omit_client_auth_token'),
     options: { vp8_fps:num('vp8_fps'), vp8_batch:num('vp8_batch'), sei_fps:num('sei_fps'), sei_batch:num('sei_batch'), sei_fragment:num('sei_fragment'), sei_ack_ms:num('sei_ack_ms'), video_width:num('video_width'), video_height:num('video_height'), video_fps:num('video_fps'), video_bitrate:d.get('video_bitrate'), video_hw:d.get('video_hw'), video_codec:d.get('video_codec'), video_qr_recovery:'low', video_tile_module:4, video_tile_rs:20 },
     liveness: { interval:d.get('liveness_interval'), timeout:d.get('liveness_timeout'), failures:num('liveness_failures') }, max_session_duration:d.get('max_session_duration'), traffic_options:{ max_payload_size:0, min_delay:'', max_delay:'' }
   };
@@ -584,6 +597,13 @@ app.addEventListener('change', event => {
   if (event.target.dataset.role === 'logs-lines') refreshLogs();
   if (event.target.dataset.role === 'logs-level') { state.logsLevel=event.target.value;refreshLogs(); }
   if (event.target.dataset.role === 'entry-source') { document.querySelector('[data-entry-linked]')?.classList.toggle('hidden',event.target.value!=='linked');document.querySelector('[data-entry-manual]')?.classList.toggle('hidden',event.target.value!=='manual'); }
+  if (event.target.dataset.role === 'dns-preset') {
+    const row = event.target.closest('form')?.querySelector('[data-role="dns-custom-row"]');
+    const input = row?.querySelector('input[name="dns_custom"]');
+    const custom = event.target.value === 'custom';
+    if (row) row.hidden = !custom;
+    if (input) { input.disabled = !custom; input.required = custom; }
+  }
   if (event.target.name === 'provider') { const row = event.target.closest('form')?.querySelector('[data-role="omit-token-row"]'); if (row) row.style.display = event.target.value === 'wbstream' ? '' : 'none'; }
 });
 

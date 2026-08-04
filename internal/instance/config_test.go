@@ -234,3 +234,11 @@ func TestApplyDefaultsNormalizesTelemostRoomID(t *testing.T) {
 		t.Fatalf("RoomID = %q, want canonical Telemost ID", item.RoomID)
 	}
 }
+
+func TestApplyDefaultsUsesGoogleDNS(t *testing.T) {
+	item := model.Instance{Provider: "jitsi", RoomID: "https://meet.example/room"}
+	ApplyDefaults(&item)
+	if item.DNS != "8.8.8.8:53" {
+		t.Fatalf("DNS = %q, want Google DNS", item.DNS)
+	}
+}

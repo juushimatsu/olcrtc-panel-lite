@@ -76,6 +76,29 @@ func TestTelemostRoomInputIsNormalized(t *testing.T) {
 	}
 }
 
+func TestInstanceDNSSelectorUsesGoogleDefaultAndPresets(t *testing.T) {
+	app, err := fs.ReadFile(Static, "static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(app)
+	for _, required := range []string{
+		"dns:'8.8.8.8:53'",
+		"Google (8.8.8.8)",
+		"Cloudflare (1.1.1.1)",
+		"Yandex (77.88.8.8)",
+		"Quad9 (9.9.9.9)",
+		"AdGuard (94.140.14.14)",
+		`name="dns_preset"`,
+		`name="dns_custom"`,
+		"dnsPreset === 'custom'",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("instance DNS selector is missing %q", required)
+		}
+	}
+}
+
 func TestSidebarLinksToPanelRepository(t *testing.T) {
 	app, err := fs.ReadFile(Static, "static/app.js")
 	if err != nil {
