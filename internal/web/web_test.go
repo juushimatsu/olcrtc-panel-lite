@@ -118,6 +118,39 @@ func TestInstanceDNSSelectorUsesGoogleDefaultAndPresets(t *testing.T) {
 	}
 }
 
+func TestInstanceFormScopesWBTokenAndCustomDNSFields(t *testing.T) {
+	app, err := fs.ReadFile(Static, "static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(app)
+	start := strings.Index(source, "function openInstanceForm")
+	end := strings.Index(source, "function normalizeRoomID")
+	if start < 0 || end <= start {
+		t.Fatal("instance form source boundaries are missing")
+	}
+	form := source[start:end]
+	for _, required := range []string{
+		"transport:'vp8channel'",
+		`data-role="auth-token-row"`,
+		`data-role="omit-token-row"`,
+		"i.provider === 'wbstream'",
+		"syncInstanceFormFields(document.querySelector('form[data-form=\"instance\"]'))",
+		`data-role="dns-custom-row"`,
+		"dnsPreset === 'custom'",
+	} {
+		if !strings.Contains(form, required) {
+			t.Fatalf("instance form is missing %q", required)
+		}
+	}
+	if strings.Contains(form, "Для WB QR OLCRTC Client содержит полный auth token") {
+		t.Fatal("obsolete WB QR warning is still shown in the instance form")
+	}
+	if !strings.Contains(source, "event.target.dataset.role === 'dns-preset' || event.target.name === 'provider'") {
+		t.Fatal("instance form visibility is not synchronized on provider/DNS changes")
+	}
+}
+
 func TestSidebarLinksToPanelRepository(t *testing.T) {
 	app, err := fs.ReadFile(Static, "static/app.js")
 	if err != nil {

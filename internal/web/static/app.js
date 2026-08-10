@@ -283,7 +283,7 @@ function instanceExpanded(item) {
 }
 
 function openInstanceForm(item = null) {
-  const i = item || { provider:'jitsi', transport:'datachannel', dns:'8.8.8.8:53', reset_policy:'never', omit_client_auth_token:true, options:{}, liveness:{} };
+  const i = item || { provider:'jitsi', transport:'vp8channel', dns:'8.8.8.8:53', reset_policy:'never', omit_client_auth_token:true, options:{}, liveness:{} };
   const dns = String(i.dns || '8.8.8.8:53').trim();
   const dnsPresets = [
     ['8.8.8.8:53', 'Google (8.8.8.8)'],
@@ -304,12 +304,12 @@ function openInstanceForm(item = null) {
         <div class="field"><label for="f-dns-preset">DNS-сервер</label><select class="select" id="f-dns-preset" name="dns_preset" data-role="dns-preset">${dnsOptions}<option value="custom" ${dnsPreset === 'custom' ? 'selected' : ''}>Другой DNS</option></select></div>
         <div class="field" data-role="dns-custom-row"${dnsPreset === 'custom' ? '' : ' hidden'}><label for="f-dns-custom">Свой DNS (IP:порт)</label><input class="input" id="f-dns-custom" name="dns_custom" type="text" value="${attr(dnsPreset === 'custom' ? dns : '')}" placeholder="9.9.9.9:53" ${dnsPreset === 'custom' ? 'required' : 'disabled'}><span class="field-hint">Укажите IPv4- или IPv6-адрес с портом 53.</span></div>
         ${field('outbound_proxy','Outbound SOCKS5 / WARP','','password',item ? 'Оставьте пустым, чтобы не менять' : 'socks5://user:pass@host:port')}
-        ${field('auth_token','WB account token','','password',item ? 'Оставьте пустым, чтобы не менять' : 'Только WB; входит в QR OLCRTC Client')}
+        <div class="field${i.provider === 'wbstream' ? '' : ' hidden'}" data-role="auth-token-row"><label for="f-auth_token">WB account token</label><input class="input" id="f-auth_token" name="auth_token" type="password" value="" placeholder="${attr(item ? 'Оставьте пустым, чтобы не менять' : 'Только WB; входит в QR OLCRTC Client')}"><span class="field-hint">Только для WB; входит в QR OLCRTC Client.</span></div>
         <div class="field"><label>Traffic reset</label><select class="select" name="reset_policy">${options(['never','daily','weekly','monthly','manual'],i.reset_policy)}</select></div>
         ${field('quota_gb','Quota, GB',i.quota_bytes ? (i.quota_bytes/1073741824).toFixed(2) : '','number','0 = unlimited')}
         ${field('expires_at','Срок действия',i.expires_at ? localDateTime(i.expires_at) : '','datetime-local','Необязательно')}
         <label class="checkbox"><input type="checkbox" name="debug" ${i.debug ? 'checked' : ''}> Debug logging</label>
-        <label class="checkbox" data-role="omit-token-row"${i.provider !== 'wbstream' ? ' style="display:none"' : ''}><input type="checkbox" name="omit_client_auth_token" ${i.omit_client_auth_token ? 'checked' : ''}> Не публиковать auth token в Client URI (гостевой вход, без WB аккаунта)</label>
+        <label class="checkbox${i.provider === 'wbstream' ? '' : ' hidden'}" data-role="omit-token-row"><input type="checkbox" name="omit_client_auth_token" ${i.omit_client_auth_token ? 'checked' : ''}> Не публиковать auth token в Client URI (гостевой вход, без WB аккаунта)</label>
       </div>
       <details style="margin-top:18px"><summary class="muted" style="cursor:pointer">Расширенные transport и liveness settings</summary><div class="form-grid" style="margin-top:16px">
         ${field('vp8_fps','VP8 FPS',i.options?.vp8_fps || 60,'number')}${field('vp8_batch','VP8 batch',i.options?.vp8_batch || 64,'number')}${field('sei_fps','SEI FPS',i.options?.sei_fps || 30,'number')}${field('sei_batch','SEI batch',i.options?.sei_batch || 64,'number')}${field('sei_fragment','SEI fragment',i.options?.sei_fragment || 900,'number')}${field('sei_ack_ms','SEI ACK, ms',i.options?.sei_ack_ms || 2000,'number')}
@@ -318,10 +318,10 @@ function openInstanceForm(item = null) {
         ${field('liveness_interval','Liveness interval',i.liveness?.interval || '10s')}${field('liveness_timeout','Liveness timeout',i.liveness?.timeout || '5s')}${field('liveness_failures','Liveness failures',i.liveness?.failures || 3,'number')}${field('max_session_duration','Max session duration',i.max_session_duration || '')}
       </div></details>
       <div class="notice" style="margin-top:18px">Outbound proxy влияет и на signalling, и на пользовательский трафик. Независимое разделение без изменения upstream невозможно.</div>
-      <div class="notice" style="margin-top:18px">Для WB QR OLCRTC Client содержит полный auth token. QR OLCBOX token не содержит.</div>
       <div class="form-actions room-automation-actions" style="justify-content:flex-start"><button class="btn" type="button" data-action="wb-fill-instance">Playwright: WB room + token</button><button class="btn" type="button" data-action="telemost-fill-instance">Playwright: Telemost room</button></div>
       <div class="form-actions"><button class="btn" type="button" data-action="close-modal">Отмена</button><button class="btn btn-primary" type="submit">${item ? 'Сохранить' : 'Создать'}</button></div>
     </form>`, true);
+  syncInstanceFormFields(document.querySelector('form[data-form="instance"]'));
 }
 
 function normalizeRoomID(provider, room) {
@@ -343,6 +343,25 @@ function normalizeInstanceRoomField(event) {
   const form = event.target.closest?.('form[data-form="instance"]');
   if (!form || !['provider', 'room_id'].includes(event.target.name)) return;
   form.elements.room_id.value = normalizeRoomID(form.elements.provider.value, form.elements.room_id.value);
+}
+
+function syncInstanceFormFields(form) {
+  if (!form) return;
+  const isWB = form.elements.provider?.value === 'wbstream';
+  const authRow = form.querySelector('[data-role="auth-token-row"]');
+  const omitTokenRow = form.querySelector('[data-role="omit-token-row"]');
+  authRow?.classList.toggle('hidden', !isWB);
+  omitTokenRow?.classList.toggle('hidden', !isWB);
+  if (!isWB && form.elements.auth_token?.value) form.elements.auth_token.value = '';
+
+  const customDNS = form.elements.dns_preset?.value === 'custom';
+  const dnsRow = form.querySelector('[data-role="dns-custom-row"]');
+  const dnsInput = form.elements.dns_custom;
+  if (dnsRow) dnsRow.hidden = !customDNS;
+  if (dnsInput) {
+    dnsInput.disabled = !customDNS;
+    dnsInput.required = customDNS;
+  }
 }
 
 function instancePayload(form) {
@@ -598,14 +617,7 @@ app.addEventListener('change', event => {
   if (event.target.dataset.role === 'logs-lines') refreshLogs();
   if (event.target.dataset.role === 'logs-level') { state.logsLevel=event.target.value;refreshLogs(); }
   if (event.target.dataset.role === 'entry-source') { document.querySelector('[data-entry-linked]')?.classList.toggle('hidden',event.target.value!=='linked');document.querySelector('[data-entry-manual]')?.classList.toggle('hidden',event.target.value!=='manual'); }
-  if (event.target.dataset.role === 'dns-preset') {
-    const row = event.target.closest('form')?.querySelector('[data-role="dns-custom-row"]');
-    const input = row?.querySelector('input[name="dns_custom"]');
-    const custom = event.target.value === 'custom';
-    if (row) row.hidden = !custom;
-    if (input) { input.disabled = !custom; input.required = custom; }
-  }
-  if (event.target.name === 'provider') { const row = event.target.closest('form')?.querySelector('[data-role="omit-token-row"]'); if (row) row.style.display = event.target.value === 'wbstream' ? '' : 'none'; }
+  if (event.target.dataset.role === 'dns-preset' || event.target.name === 'provider') syncInstanceFormFields(event.target.closest('form[data-form="instance"]'));
 });
 
 window.addEventListener('hashchange', () => { const page=location.hash.replace('#','') || 'dashboard';if(page!==state.page)navigate(page,false); });
@@ -671,13 +683,13 @@ function openWBTokenModal(){openModal('Обновить общий WB token вр
 async function fillWBInstanceForm(){
   const form=document.querySelector('form[data-form="instance"]');if(!form)return;
   const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action:'create',provider:'wbstream'})});window.open(session.novnc_url,'olcrtc-wb-novnc','noopener');toast('WB-сессия запущена','Войдите в WB Stream и пройдите CAPTCHA.');
-  const current=await waitForWBSession();const room=current.state?.room_id||'',token=current.state?.token||'';if(!token)throw new Error('WB token не получен из успешной Playwright-сессии');if(room)form.elements.room_id.value=room;form.elements.auth_token.value=token;form.elements.provider.value='wbstream';toast('WB данные получены',`Room ID и WB account token заполнены. ${wbApplySummary(current.state?.applied)}`);
+  const current=await waitForWBSession();const room=current.state?.room_id||'',token=current.state?.token||'';if(!token)throw new Error('WB token не получен из успешной Playwright-сессии');if(room)form.elements.room_id.value=room;form.elements.auth_token.value=token;form.elements.provider.value='wbstream';syncInstanceFormFields(form);toast('WB данные получены',`Room ID и WB account token заполнены. ${wbApplySummary(current.state?.applied)}`);
 }
 
 async function fillTelemostInstanceForm(){
   const form=document.querySelector('form[data-form="instance"]');if(!form)return;
   const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action:'create',provider:'telemost'})});window.open(session.novnc_url,'olcrtc-telemost-novnc','noopener');toast('Telemost-сессия запущена','Если Яндекс запросит вход, завершите его через noVNC.');
-  const current=await waitForWBSession(()=>{},'Telemost');const room=normalizeRoomID('telemost',current.state?.room_id||'');if(!room)throw new Error('Room ID не получен из успешной Telemost-сессии');form.elements.provider.value='telemost';form.elements.transport.value='vp8channel';form.elements.room_id.value=room;form.elements.auth_token.value='';toast('Комната Telemost создана',`Room ID ${room} подставлен в форму инстанса.`);
+  const current=await waitForWBSession(()=>{},'Telemost');const room=normalizeRoomID('telemost',current.state?.room_id||'');if(!room)throw new Error('Room ID не получен из успешной Telemost-сессии');form.elements.provider.value='telemost';form.elements.transport.value='vp8channel';form.elements.room_id.value=room;form.elements.auth_token.value='';syncInstanceFormFields(form);toast('Комната Telemost создана',`Room ID ${room} подставлен в форму инстанса.`);
 }
 
 async function runWBSession(action){
