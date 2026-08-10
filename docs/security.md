@@ -9,6 +9,7 @@
 - config/key записываются во временный файл, синхронизируются и заменяются atomic rename;
 - password хранится как Argon2id PHC string;
 - WB token, Yandex OAuth token и proxy passwords шифруются AES-256-GCM с отдельным nonce;
+- постоянный Chromium profile содержит авторизационные cookies WB и Яндекса, хранится отдельно с mode `0700` и должен считаться credential material;
 - machine master key хранится вне SQLite в `/etc/olcrtc-panel/master.key` с mode `0600`;
 - session и CSRF token сохраняются только в SHA-256 representation;
 - cookies имеют `Secure`, `HttpOnly` для session и `SameSite=Strict`;

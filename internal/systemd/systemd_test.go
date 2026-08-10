@@ -52,3 +52,24 @@ func TestWaitActiveRejectsTransientRunningState(t *testing.T) {
 		t.Fatal("transient running state was accepted")
 	}
 }
+
+func TestElapsedMonotonicUsesProcessStartInsteadOfPanelLifetime(t *testing.T) {
+	tests := []struct {
+		name       string
+		started    string
+		nowMicros  uint64
+		wantSecond int64
+	}{
+		{name: "running", started: "5000000", nowMicros: 12_750_000, wantSecond: 7},
+		{name: "subsecond", started: "12000000", nowMicros: 12_750_000, wantSecond: 0},
+		{name: "future", started: "13000000", nowMicros: 12_750_000, wantSecond: 0},
+		{name: "invalid", started: "n/a", nowMicros: 12_750_000, wantSecond: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := elapsedMonotonic(test.started, test.nowMicros); got != test.wantSecond {
+				t.Fatalf("elapsedMonotonic() = %d, want %d", got, test.wantSecond)
+			}
+		})
+	}
+}

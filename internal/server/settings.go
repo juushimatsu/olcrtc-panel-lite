@@ -248,14 +248,23 @@ func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 	}
 	expires := time.Now().Add(15 * time.Minute)
 	input := struct {
-		Action string `json:"action"`
-	}{Action: "create"}
+		Action   string `json:"action"`
+		Provider string `json:"provider"`
+	}{Action: "create", Provider: "wbstream"}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "Укажите action create или refresh")
 		return
 	}
 	if input.Action != "create" && input.Action != "refresh" {
 		writeError(w, r, http.StatusBadRequest, "invalid_action", "Action должен быть create или refresh")
+		return
+	}
+	if input.Provider != "wbstream" && input.Provider != "telemost" {
+		writeError(w, r, http.StatusBadRequest, "invalid_provider", "Provider автоматизации должен быть wbstream или telemost")
+		return
+	}
+	if input.Provider == "telemost" && input.Action != "create" {
+		writeError(w, r, http.StatusBadRequest, "invalid_action", "Telemost поддерживает только создание комнаты")
 		return
 	}
 	if current, _ := s.store.SettingOrDefault(r.Context(), "wb_session_expires", ""); current != "" {
@@ -287,7 +296,7 @@ func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusInternalServerError, "wb_runtime_failed", "Не удалось подготовить WB runtime directory")
 		return
 	}
-	if err := s.writeWBJob(r.Context(), expires, input.Action); err != nil {
+	if err := s.writeWBJob(r.Context(), expires, input.Action, input.Provider); err != nil {
 		s.logger.Error("prepare WB job", "error", err)
 		writeError(w, r, http.StatusInternalServerError, "wb_job_failed", "Не удалось подготовить WB job")
 		return
@@ -310,8 +319,8 @@ func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.SetSetting(r.Context(), "wb_session_expires", expires.Format(time.RFC3339), false)
 	_ = s.store.SetSetting(r.Context(), "wb_session_extended", "false", false)
 	s.startWBSessionMonitor()
-	audit(s, r, "wb.session_start", "wb", "session", "success", "action="+input.Action)
-	writeJSON(w, http.StatusCreated, map[string]any{"active": true, "action": input.Action, "expires_at": expires, "novnc_url": wbNoVNCURL})
+	audit(s, r, "wb.session_start", "wb", "session", "success", "provider="+input.Provider+" action="+input.Action)
+	writeJSON(w, http.StatusCreated, map[string]any{"active": true, "action": input.Action, "provider": input.Provider, "expires_at": expires, "novnc_url": wbNoVNCURL})
 }
 
 func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
@@ -367,7 +376,8 @@ func (s *Server) attachWBCreateToken(ctx context.Context, state map[string]any) 
 func shouldExposeWBCreateToken(state map[string]any) bool {
 	phase, _ := state["phase"].(string)
 	action, _ := state["action"].(string)
-	return phase == "success" && action == "create"
+	provider, _ := state["provider"].(string)
+	return phase == "success" && action == "create" && (provider == "" || provider == "wbstream")
 }
 
 func (s *Server) handleWBSessionExtend(w http.ResponseWriter, r *http.Request) {
@@ -662,7 +672,7 @@ func (s *Server) syncWBTokenSubscriptions(ctx context.Context, result map[string
 	s.subscriptionsChanged(ctx, slugs)
 }
 
-func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action string) error {
+func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action, provider string) error {
 	mode, _ := s.store.SettingOrDefault(ctx, "wb_proxy_mode", "direct")
 	address, _ := s.store.SettingOrDefault(ctx, "wb_proxy_address", "")
 	password := ""
@@ -674,8 +684,11 @@ func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action strin
 		proxy["server"] = mode + "://" + address
 		proxy["password"] = password
 	}
+	homeURL := "https://stream.wb.ru"
 	existingRoomID := ""
-	if items, err := s.store.Instances(ctx); err == nil {
+	if provider == "telemost" {
+		homeURL = "https://telemost.yandex.ru"
+	} else if items, err := s.store.Instances(ctx); err == nil {
 		for _, item := range items {
 			if item.Provider == "wbstream" && item.RoomID != "" {
 				existingRoomID = item.RoomID
@@ -683,14 +696,14 @@ func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action strin
 			}
 		}
 	}
-	job := map[string]any{"action": action, "home_url": "https://stream.wb.ru", "existing_room_id": existingRoomID, "profile_dir": wbProfileDir, "state_file": wbStatePath, "control_file": wbControlPath, "deadline_unix": expires.Unix(), "proxy": proxy}
+	job := map[string]any{"action": action, "provider": provider, "home_url": homeURL, "existing_room_id": existingRoomID, "profile_dir": wbProfileDir, "state_file": wbStatePath, "control_file": wbControlPath, "deadline_unix": expires.Unix(), "proxy": proxy}
 	if err := writeWBWorkerJSON(wbJobPath, job); err != nil {
 		return err
 	}
 	if err := writeWBWorkerJSON(wbControlPath, map[string]int64{"deadline_unix": expires.Unix()}); err != nil {
 		return err
 	}
-	return writeWBWorkerJSON(wbStatePath, map[string]any{"phase": "queued", "message": "Запуск Chromium...", "percent": 1, "updated_at": time.Now().Unix()})
+	return writeWBWorkerJSON(wbStatePath, map[string]any{"phase": "queued", "message": "Запуск Chromium...", "percent": 1, "action": action, "provider": provider, "updated_at": time.Now().Unix()})
 }
 
 func refreshWBAutomationRuntimeAssets(ctx context.Context) error {

@@ -319,7 +319,7 @@ function openInstanceForm(item = null) {
       </div></details>
       <div class="notice" style="margin-top:18px">Outbound proxy влияет и на signalling, и на пользовательский трафик. Независимое разделение без изменения upstream невозможно.</div>
       <div class="notice" style="margin-top:18px">Для WB QR OLCRTC Client содержит полный auth token. QR OLCBOX token не содержит.</div>
-      <div class="form-actions" style="justify-content:flex-start"><button class="btn" type="button" data-action="wb-fill-instance">Playwright: получить token и создать комнату</button></div>
+      <div class="form-actions room-automation-actions" style="justify-content:flex-start"><button class="btn" type="button" data-action="wb-fill-instance">Playwright: WB room + token</button><button class="btn" type="button" data-action="telemost-fill-instance">Playwright: Telemost room</button></div>
       <div class="form-actions"><button class="btn" type="button" data-action="close-modal">Отмена</button><button class="btn btn-primary" type="submit">${item ? 'Сохранить' : 'Создать'}</button></div>
     </form>`, true);
 }
@@ -547,6 +547,7 @@ app.addEventListener('click', async event => {
     if (action === 'wb-playwright-refresh') await runWBSession('refresh');
     if (action === 'wb-token') openWBTokenModal();
     if (action === 'wb-fill-instance') await fillWBInstanceForm();
+    if (action === 'telemost-fill-instance') await fillTelemostInstanceForm();
     if (action === 'wb-profile-reset') { if (confirm('Очистить Chromium профиль WB? Сохранённые cookie и активная сессия будут удалены — при следующем запуске Playwright потребуется войти в WB заново.')) { await api('/api/v1/wb/profile/reset', {method:'POST'}); toast('Профиль очищен', 'При следующем запуске Playwright потребуется войти в WB заново.'); if (state.page === 'settings') { stopPolling(); await loadSettings(); } } }
     if (action === 'generate-jitsi-room') { const form=document.querySelector('form[data-form="instance"]');if(form){const bytes=new Uint8Array(10);crypto.getRandomValues(bytes);const name=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');form.elements.provider.value='jitsi';form.elements.room_id.value=`https://meet.jit.si/olc-${name}`;} }
     if (action === 'refresh-logs') await refreshLogs();
@@ -669,12 +670,18 @@ function openWBTokenModal(){openModal('Обновить общий WB token вр
 
 async function fillWBInstanceForm(){
   const form=document.querySelector('form[data-form="instance"]');if(!form)return;
-  const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action:'create'})});window.open(session.novnc_url,'olcrtc-wb-novnc','noopener');toast('WB-сессия запущена','Войдите в WB Stream и пройдите CAPTCHA.');
+  const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action:'create',provider:'wbstream'})});window.open(session.novnc_url,'olcrtc-wb-novnc','noopener');toast('WB-сессия запущена','Войдите в WB Stream и пройдите CAPTCHA.');
   const current=await waitForWBSession();const room=current.state?.room_id||'',token=current.state?.token||'';if(!token)throw new Error('WB token не получен из успешной Playwright-сессии');if(room)form.elements.room_id.value=room;form.elements.auth_token.value=token;form.elements.provider.value='wbstream';toast('WB данные получены',`Room ID и WB account token заполнены. ${wbApplySummary(current.state?.applied)}`);
 }
 
+async function fillTelemostInstanceForm(){
+  const form=document.querySelector('form[data-form="instance"]');if(!form)return;
+  const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action:'create',provider:'telemost'})});window.open(session.novnc_url,'olcrtc-telemost-novnc','noopener');toast('Telemost-сессия запущена','Если Яндекс запросит вход, завершите его через noVNC.');
+  const current=await waitForWBSession(()=>{},'Telemost');const room=normalizeRoomID('telemost',current.state?.room_id||'');if(!room)throw new Error('Room ID не получен из успешной Telemost-сессии');form.elements.provider.value='telemost';form.elements.transport.value='vp8channel';form.elements.room_id.value=room;form.elements.auth_token.value='';toast('Комната Telemost создана',`Room ID ${room} подставлен в форму инстанса.`);
+}
+
 async function runWBSession(action){
-  const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action})});
+  const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action,provider:'wbstream'})});
   window.open(session.novnc_url,'olcrtc-wb-novnc','noopener');
   openModal(action==='create'?'Playwright: создать WB комнату':'Playwright: обновить WB token',`<div class="notice info">Сессия активна до ${formatDate(session.expires_at)}. Выполните login/CAPTCHA в noVNC.</div><div class="form-actions"><a class="btn btn-primary" href="${attr(session.novnc_url)}" target="_blank" rel="noopener">Открыть noVNC</a></div><div class="operation-card running" id="wb-session-state">Ожидание Chromium...</div>`);
   const current=await waitForWBSession(statePayload=>{const root=document.querySelector('#wb-session-state');if(root)root.textContent=`${statePayload.message||statePayload.phase||'Ожидание'} · ${statePayload.percent||0}%`;});
@@ -684,15 +691,15 @@ async function runWBSession(action){
   return current;
 }
 
-async function waitForWBSession(onProgress=()=>{}){
+async function waitForWBSession(onProgress=()=>{},label='WB'){
   for(let attempt=0;attempt<450;attempt++){
     await new Promise(resolve=>setTimeout(resolve,2000));
     const current=await api('/api/v1/wb/session');const worker=current.state||{};onProgress(worker);
     if(worker.phase==='success')return current;
-    if(worker.phase==='error')throw new Error(worker.message||'WB automation завершилась с ошибкой');
-    if(!current.active)throw new Error('Время WB-сессии истекло');
+    if(worker.phase==='error')throw new Error(worker.message||`${label} automation завершилась с ошибкой`);
+    if(!current.active)throw new Error(`Время ${label}-сессии истекло`);
   }
-  throw new Error('WB automation не завершилась вовремя');
+  throw new Error(`${label} automation не завершилась вовремя`);
 }
 
 function wbApplySummary(result={}){const updated=result?.updated?.length||0,subscriptions=result?.subscriptions_updated?.length||0,mirrors=result?.mirrors_scheduled?.length||0;const failed=Object.entries(result?.failed||{});return `Обновлено WB-инстансов: ${updated}; подписок: ${subscriptions}; mirrors запланировано: ${mirrors}${failed.length?`. Ошибки: ${failed.map(([id,message])=>`#${id} ${message}`).join('; ')}`:'. Ошибок нет.'}`;}

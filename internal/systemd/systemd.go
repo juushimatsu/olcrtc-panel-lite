@@ -71,7 +71,7 @@ func (m *Manager) Status(ctx context.Context, id int64) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	out, err := exec.CommandContext(ctx, "systemctl", "show", name, "--property=ActiveState,SubState,ActiveEnterTimestamp,IPIngressBytes,IPEgressBytes").Output()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", name, "--property=ActiveState,SubState,ExecMainStartTimestampMonotonic,ActiveEnterTimestampMonotonic,ActiveEnterTimestamp,IPIngressBytes,IPEgressBytes").Output()
 	if err != nil {
 		return Status{State: "unknown"}, fmt.Errorf("systemctl show: %w", err)
 	}
@@ -80,11 +80,28 @@ func (m *Manager) Status(ctx context.Context, id int64) (Status, error) {
 	status.State = mapState(values["ActiveState"])
 	status.SubState = values["SubState"]
 	if status.State == "running" {
-		status.UptimeSeconds = uptimeFromWallClock(values["ActiveEnterTimestamp"])
+		started := values["ExecMainStartTimestampMonotonic"]
+		if started == "" || started == "0" {
+			started = values["ActiveEnterTimestampMonotonic"]
+		}
+		if nowMicros, ok := monotonicMicros(); ok {
+			status.UptimeSeconds = elapsedMonotonic(started, nowMicros)
+		}
+		if status.UptimeSeconds == 0 {
+			status.UptimeSeconds = uptimeFromWallClock(values["ActiveEnterTimestamp"])
+		}
 	}
 	status.IngressBytes, _ = strconv.ParseInt(values["IPIngressBytes"], 10, 64)
 	status.EgressBytes, _ = strconv.ParseInt(values["IPEgressBytes"], 10, 64)
 	return status, nil
+}
+
+func elapsedMonotonic(started string, nowMicros uint64) int64 {
+	startMicros, err := strconv.ParseUint(strings.TrimSpace(started), 10, 64)
+	if err != nil || startMicros == 0 || nowMicros <= startMicros {
+		return 0
+	}
+	return int64((nowMicros - startMicros) / 1_000_000)
 }
 
 // uptimeFromWallClock parses the systemd ActiveEnterTimestamp wall-clock value

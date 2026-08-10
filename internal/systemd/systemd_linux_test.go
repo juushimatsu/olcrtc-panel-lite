@@ -42,6 +42,43 @@ exit 0
 	}
 }
 
+func TestStatusUsesMonotonicProcessStartTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "systemctl.log")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$SYSTEMCTL_TEST_LOG"
+cat <<'EOF'
+ActiveState=active
+SubState=running
+ExecMainStartTimestampMonotonic=1
+ActiveEnterTimestampMonotonic=1
+ActiveEnterTimestamp=n/a
+IPIngressBytes=12
+IPEgressBytes=34
+EOF
+`
+	if err := os.WriteFile(filepath.Join(dir, "systemctl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYSTEMCTL_TEST_LOG", logPath)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	status, err := New(true).Status(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "running" || status.UptimeSeconds <= 0 || status.IngressBytes != 12 || status.EgressBytes != 34 {
+		t.Fatalf("unexpected status: %#v", status)
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logged), "ExecMainStartTimestampMonotonic") {
+		t.Fatalf("systemctl properties do not request process monotonic start: %s", logged)
+	}
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false

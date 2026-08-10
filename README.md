@@ -18,7 +18,7 @@ Self-hosted HTTPS admin panel for deploying and managing [olcRTC](https://github
 - OLCRTC Client subscriptions с compact JSON QR и encrypted Yandex fallback;
 - exact payload traffic из journald с дедупликацией по cursor;
 - AES-256-GCM Yandex Disk mirror;
-- опциональный Playwright/Chromium/noVNC workflow create/refresh для WB Stream на `linux/amd64` с контролем срока JWT;
+- опциональный Playwright/Chromium/noVNC workflow создания комнат Telemost и create/refresh для WB Stream на `linux/amd64` с контролем срока JWT;
 - backup, manual update и rollback проверенных release bundles;
 - тёмная и светлая адаптивные темы без CDN/runtime Node.js.
 
@@ -134,9 +134,9 @@ Upstream source не является частью runtime-репозитори�
 
 - нет доменов, ACME/Let's Encrypt, multi-user/RBAC, 2FA и billing;
 - quota/expiry только отображаются и не останавливают общий инстанс;
-- WB Playwright недоступен на arm64, ручной Room ID/token остаётся доступен;
+- Playwright automation недоступна на arm64, ручной Telemost Room ID и WB Room ID/token остаются доступны;
 - private CA необходимо отдельно установить в trust store клиента и сверить fingerprint;
-- provider DOM/API может меняться, поэтому WB automation имеет ручной fallback.
+- provider DOM/API может меняться, поэтому WB и Telemost automation имеют ручной fallback.
 
 ## Лицензия
 

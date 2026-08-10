@@ -157,6 +157,7 @@ code, .mono { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospac
 .form-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 21px; }
 .wb-actions { justify-content: flex-start; flex-wrap: wrap; }
 .form-actions.wb-actions { min-width: 0; max-width: 100%; }
+.room-automation-actions { flex-wrap: wrap; }
 .inline-form { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
 .inline-form .field { flex: 1 1 180px; }
 .checkbox { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
@@ -309,6 +310,7 @@ html[data-theme="light"] .log-viewer { background: #172027; color: #e1eaed; }
   .search { min-width: 0; }
   .filters .select { flex: 1; }
   .wb-actions .btn { width: 100%; max-width: 100%; white-space: normal; }
+  .room-automation-actions .btn { width: 100%; max-width: 100%; white-space: normal; }
   .expanded-stats, .detail-list { grid-template-columns: 1fr 1fr; }
   .login-card { padding: 25px 20px; }
 }

@@ -76,6 +76,25 @@ func TestTelemostRoomInputIsNormalized(t *testing.T) {
 	}
 }
 
+func TestTelemostPlaywrightFlowFillsInstanceRoom(t *testing.T) {
+	app, err := fs.ReadFile(Static, "static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(app)
+	for _, required := range []string{
+		`data-action="telemost-fill-instance"`,
+		"provider:'telemost'",
+		"form.elements.provider.value='telemost'",
+		"form.elements.transport.value='vp8channel'",
+		"normalizeRoomID('telemost',current.state?.room_id||'')",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("Telemost Playwright UI flow is missing %q", required)
+		}
+	}
+}
+
 func TestInstanceDNSSelectorUsesGoogleDefaultAndPresets(t *testing.T) {
 	app, err := fs.ReadFile(Static, "static/app.js")
 	if err != nil {

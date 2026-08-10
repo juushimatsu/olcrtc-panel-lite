@@ -115,3 +115,10 @@ func TestWBCreateSessionExposesTokenOnlyAfterSuccess(t *testing.T) {
 		}
 	}
 }
+
+func TestTelemostCreateSessionNeverExposesStoredWBToken(t *testing.T) {
+	state := map[string]any{"phase": "success", "action": "create", "provider": "telemost", "room_id": "01234567890123"}
+	if shouldExposeWBCreateToken(state) {
+		t.Fatal("Telemost create session was allowed to expose the stored WB token")
+	}
+}

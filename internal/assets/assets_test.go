@@ -246,3 +246,23 @@ func TestWBWorkerCarriesSessionActionIntoResultState(t *testing.T) {
 		t.Fatal("WB worker state does not identify create versus refresh sessions")
 	}
 }
+
+func TestWorkerSupportsTelemostCreationWithManualYandexLogin(t *testing.T) {
+	worker, err := fs.ReadFile(files, "files/wb/worker.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(worker)
+	for _, required := range []string{
+		"provider === 'telemost'",
+		`[data-testid="create-call-button"]`,
+		`[data-testid="add-user-login-input"]`,
+		"https://telemost.yandex.ru",
+		"findTelemostRoomID",
+		"Комната Telemost создана",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("Telemost worker flow is missing %q", required)
+		}
+	}
+}
