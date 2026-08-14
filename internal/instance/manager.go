@@ -28,6 +28,7 @@ type Manager struct {
 	systemd      systemd.Controller
 	instancesDir string
 	runtimeDir   string
+	releaseDir   string
 	maxInstances int
 }
 
@@ -39,8 +40,8 @@ func (m *Manager) SetMaxInstances(value int) {
 }
 
 // NewManager creates an instance manager.
-func NewManager(st *store.Store, secrets *security.Secrets, controller systemd.Controller, instancesDir, runtimeDir string, maxInstances int) *Manager {
-	return &Manager{store: st, secrets: secrets, systemd: controller, instancesDir: instancesDir, runtimeDir: runtimeDir, maxInstances: maxInstances}
+func NewManager(st *store.Store, secrets *security.Secrets, controller systemd.Controller, instancesDir, runtimeDir, releaseDir string, maxInstances int) *Manager {
+	return &Manager{store: st, secrets: secrets, systemd: controller, instancesDir: instancesDir, runtimeDir: runtimeDir, releaseDir: releaseDir, maxInstances: maxInstances}
 }
 
 // Create persists a stopped instance and writes its key and official YAML atomically.
@@ -444,6 +445,50 @@ func (m *Manager) decryptSecrets(item model.Instance) (model.Instance, error) {
 	return item, err
 }
 
+// Reconcile rewrites all instance YAML files to use the current bundle data path.
+// It must be called after opening the database but before the HTTP server starts.
+func (m *Manager) Reconcile(ctx context.Context) error {
+	items, err := m.store.Instances(ctx)
+	if err != nil {
+		return fmt.Errorf("load instances for reconcile: %w", err)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	type backup struct {
+		id      int64
+		content []byte
+	}
+	backups := make([]backup, 0, len(items))
+	newConfigs := make(map[int64][]byte, len(items))
+	dataPath := filepath.Join(m.releaseDir, "data")
+	for _, item := range items {
+		plain, decryptErr := m.decryptSecrets(item)
+		if decryptErr != nil {
+			return fmt.Errorf("decrypt instance %d secrets: %w", item.ID, decryptErr)
+		}
+		newYAML, renderErr := RenderYAML(plain, m.keyPath(item.ID), dataPath)
+		if renderErr != nil {
+			return fmt.Errorf("render instance %d YAML: %w", item.ID, renderErr)
+		}
+		oldContent, _ := os.ReadFile(m.configPath(item.ID))
+		if len(oldContent) > 0 {
+			backups = append(backups, backup{id: item.ID, content: oldContent})
+		}
+		newConfigs[item.ID] = newYAML
+	}
+	for id, content := range newConfigs {
+		if err := atomicWrite(m.configPath(id), content, 0o640); err != nil {
+			for _, b := range backups {
+				_ = atomicWrite(m.configPath(b.id), b.content, 0o640)
+			}
+			return fmt.Errorf("write reconciled config for instance %d: %w", id, err)
+		}
+		m.applyOwnership(id)
+	}
+	return nil
+}
+
 func (m *Manager) writeInstanceFiles(item model.Instance, key string) error {
 	if err := os.MkdirAll(m.instancePath(item.ID), 0o750); err != nil {
 		return fmt.Errorf("create instance config directory: %w", err)
@@ -466,7 +511,8 @@ func (m *Manager) writeInstanceFiles(item model.Instance, key string) error {
 }
 
 func (m *Manager) writeConfig(item model.Instance, _ string) error {
-	b, err := RenderYAML(item, m.keyPath(item.ID), filepath.Join(m.runtimePath(item.ID), "data"))
+	dataPath := filepath.Join(m.releaseDir, "data")
+	b, err := RenderYAML(item, m.keyPath(item.ID), dataPath)
 	if err != nil {
 		return err
 	}

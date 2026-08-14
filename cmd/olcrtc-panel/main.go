@@ -142,7 +142,10 @@ func serve(args []string) error {
 		return err
 	}
 	controller := systemd.New(cfg.SystemdEnabled)
-	instances := instance.NewManager(st, secrets, controller, cfg.InstancesDir, cfg.RuntimeDir, cfg.MaxInstances)
+	instances := instance.NewManager(st, secrets, controller, cfg.InstancesDir, cfg.RuntimeDir, cfg.ReleaseDir, cfg.MaxInstances)
+	if err := instances.Reconcile(context.Background()); err != nil {
+		return fmt.Errorf("reconcile instance configurations: %w", err)
+	}
 	baseURL := cfg.PublicSubscriptionBaseURL()
 	subscriptions := subscription.NewServiceAtSubscriptionPath(st, instances, secrets, cfg.PublicSubscriptionBaseURL())
 	handler := server.New(cfg, st, instances, subscriptions, secrets, logger)
@@ -402,10 +405,6 @@ func resetCredentials(ctx context.Context, st *store.Store) (string, string, err
 		err = st.UpdateAdminCredentials(ctx, username, hash)
 	}
 	return username, password, err
-}
-
-func publicURL(cfg config.Config) string {
-	return cfg.PublicBaseURL()
 }
 
 func supervise(ctx context.Context, logger *slog.Logger, name string, run func(context.Context) error) {

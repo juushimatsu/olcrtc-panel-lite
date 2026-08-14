@@ -109,6 +109,15 @@ set_bundle_permissions() {
         chown root:olcrtc "$directory/olcrtc"
         chmod 0750 "$directory/olcrtc"
     fi
+    if [ -d "$directory/data" ]; then
+        chown root:olcrtc "$directory/data"
+        chmod 0750 "$directory/data"
+        for file in "$directory/data/names" "$directory/data/surnames"; do
+            [ -f "$file" ] || continue
+            chown root:olcrtc "$file"
+            chmod 0640 "$file"
+        done
+    fi
 }
 
 repair_instance_permissions() {
@@ -150,14 +159,30 @@ install_bundle() {
     work=$WORK_DIR
     base="https://github.com/$REPOSITORY/releases/download/$BUNDLE"
     write_state downloading "Загрузка файлов release bundle" 15
-    for file in manifest.json SHA256SUMS "olcrtc-panel-linux-$ARCH" "olcrtc-linux-$ARCH"; do curl -fsSL "$base/$file" -o "$work/$file"; done
+    for file in manifest.json SHA256SUMS "olcrtc-panel-linux-$ARCH" "olcrtc-linux-$ARCH" olcrtc-names olcrtc-surnames; do curl -fsSL "$base/$file" -o "$work/$file"; done
     write_state verifying "Проверка SHA-256 загруженных файлов" 35
-    (cd "$work"; grep "  olcrtc-panel-linux-$ARCH$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-linux-$ARCH$" SHA256SUMS | sha256sum -c -)
+    (cd "$work"; grep "  olcrtc-panel-linux-$ARCH$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-linux-$ARCH$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-names$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-surnames$" SHA256SUMS | sha256sum -c -)
     write_state installing "Установка проверенного bundle" 50
     install -d -m 0710 -o root -g olcrtc "$target"
+    install -d -m 0750 -o root -g olcrtc "$target/data"
     install -m 0750 -o root -g root "$work/olcrtc-panel-linux-$ARCH" "$target/olcrtc-panel"
     install -m 0750 -o root -g olcrtc "$work/olcrtc-linux-$ARCH" "$target/olcrtc"
+    install -m 0640 -o root -g olcrtc "$work/olcrtc-names" "$target/data/names"
+    install -m 0640 -o root -g olcrtc "$work/olcrtc-surnames" "$target/data/surnames"
     install -m 0600 "$work/manifest.json" "$target/manifest.json"
+    install -d -m 0750 -o root -g olcrtc "$RELEASES/data"
+    install -m 0640 -o root -g olcrtc "$target/data/names" "$RELEASES/data/names"
+    install -m 0640 -o root -g olcrtc "$target/data/surnames" "$RELEASES/data/surnames"
+    for instance_dir in /var/lib/olcrtc/[0-9]*; do
+        [ -d "$instance_dir" ] || continue
+        instance_data="$instance_dir/data"
+        if [ -d "$instance_data" ]; then
+            if [ ! -f "$instance_data/names" ] || [ ! -s "$instance_data/names" ] || [ ! -f "$instance_data/surnames" ] || [ ! -s "$instance_data/surnames" ]; then
+                install -m 0640 -o olcrtc -g olcrtc "$RELEASES/data/names" "$instance_data/names" 2>/dev/null || true
+                install -m 0640 -o olcrtc -g olcrtc "$RELEASES/data/surnames" "$instance_data/surnames" 2>/dev/null || true
+            fi
+        fi
+    done
     health_url=$(panel_health_url "$target/olcrtc-panel")
     current=$(readlink -f "$RELEASES/current" || true)
     [ -n "$current" ] && set_bundle_permissions "$current"
@@ -206,6 +231,16 @@ rollback() {
     previous=$(readlink -f "$RELEASES/previous" || true)
     [ -n "$previous" ] && set_bundle_permissions "$previous"
     [ -x "$previous/olcrtc-panel" ] || { echo "previous bundle is unavailable" >&2; exit 1; }
+    if [ ! -d "$RELEASES/data" ] || [ ! -f "$RELEASES/data/names" ] || [ ! -f "$RELEASES/data/surnames" ]; then
+        if [ -d "$previous/data" ] && [ -f "$previous/data/names" ] && [ -f "$previous/data/surnames" ]; then
+            install -d -m 0750 -o root -g olcrtc "$RELEASES/data"
+            install -m 0640 -o root -g olcrtc "$previous/data/names" "$RELEASES/data/names"
+            install -m 0640 -o root -g olcrtc "$previous/data/surnames" "$RELEASES/data/surnames"
+        else
+            echo "shared data directory is missing and cannot be restored from previous bundle" >&2
+            exit 1
+        fi
+    fi
     current=$(readlink -f "$RELEASES/current" || true)
     health_url=$(panel_health_url "$previous/olcrtc-panel")
     repair_instance_permissions

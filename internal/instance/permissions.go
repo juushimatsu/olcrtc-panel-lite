@@ -56,6 +56,26 @@ func PreparePermissions(cfg config.Config, id int64) error {
 		return fmt.Errorf("create instance runtime: %w", err)
 	}
 
+	sharedDataDir := filepath.Join(cfg.ReleaseDir, "data")
+	namesPath := filepath.Join(sharedDataDir, "names")
+	surnamesPath := filepath.Join(sharedDataDir, "surnames")
+	if _, err := os.Stat(namesPath); err == nil {
+		if _, err := os.Stat(surnamesPath); err == nil {
+			instanceNamesPath := filepath.Join(runtimeDir, "data", "names")
+			instanceSurnamesPath := filepath.Join(runtimeDir, "data", "surnames")
+			if _, err := os.Stat(instanceNamesPath); os.IsNotExist(err) {
+				if data, err := os.ReadFile(namesPath); err == nil {
+					_ = os.WriteFile(instanceNamesPath, data, 0o640)
+				}
+			}
+			if _, err := os.Stat(instanceSurnamesPath); os.IsNotExist(err) {
+				if data, err := os.ReadFile(surnamesPath); err == nil {
+					_ = os.WriteFile(instanceSurnamesPath, data, 0o640)
+				}
+			}
+		}
+	}
+
 	paths := []struct {
 		path string
 		uid  int

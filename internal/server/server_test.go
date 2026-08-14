@@ -56,7 +56,7 @@ func newTestPanelWithConfig(t *testing.T, configure func(*config.Config)) testPa
 		t.Fatal(err)
 	}
 	secrets, _ := security.NewSecrets(make([]byte, 32))
-	instances := instance.NewManager(st, secrets, systemd.New(false), cfg.InstancesDir, cfg.RuntimeDir, 20)
+	instances := instance.NewManager(st, secrets, systemd.New(false), cfg.InstancesDir, cfg.RuntimeDir, cfg.ReleaseDir, 20)
 	subscriptions := subscription.NewServiceAtSubscriptionPath(st, instances, secrets, cfg.PublicSubscriptionBaseURL())
 	handler := New(cfg, st, instances, subscriptions, secrets, slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)))
 	ts := httptest.NewTLSServer(handler)

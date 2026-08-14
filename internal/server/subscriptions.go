@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juushimatsu/olcrtc-panel-lite/internal/config"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/instance"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/model"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/security"
@@ -587,8 +586,4 @@ func (s *Server) subscriptionError(w http.ResponseWriter, r *http.Request, err e
 		return
 	}
 	writeError(w, r, http.StatusBadRequest, "subscription_operation_failed", err.Error())
-}
-
-func publicBaseURL(cfg config.Config) string {
-	return cfg.PublicBaseURL()
 }

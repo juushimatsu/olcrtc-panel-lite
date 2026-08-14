@@ -20,7 +20,7 @@ func TestRotateClientIDChangesClientURI(t *testing.T) {
 	}
 	defer st.Close()
 	secrets, _ := security.NewSecrets(make([]byte, 32))
-	manager := NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	manager := NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), filepath.Join(root, "releases"), 20)
 	ctx := context.Background()
 	created, err := manager.Create(ctx, model.Instance{Name: "Jitsi", Provider: "jitsi", Transport: "datachannel", RoomID: "https://meet.example/room", DNS: "8.8.8.8:53"})
 	if err != nil {

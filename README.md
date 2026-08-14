@@ -134,6 +134,28 @@ browser
 
 Upstream source не является частью runtime-репозитория панели. CI клонирует `openlibrecommunity/olcrtc:master`, проверяет чистое дерево, фиксирует SHA и публикует только полностью прошедший gates bundle.
 
+### Release Bundle
+
+Каждый release bundle включает:
+- `olcrtc-panel-linux-{amd64,arm64}` — исполняемый файл панели
+- `olcrtc-linux-{amd64,arm64}` — официальный upstream бинарник
+- `olcrtc-names`, `olcrtc-surnames` — словари для генерации имён участников (извлечены из upstream `data/`)
+- `manifest.json` — метаданные bundle (upstream SHA, версия панели, время сборки)
+- `SHA256SUMS` — контрольные суммы всех файлов
+- `install.sh`, `uninstall.sh` — установочные скрипты
+
+При установке или обновлении:
+1. Словари копируются в `/var/lib/olcrtc-panel/releases/data/` (shared location)
+2. YAML каждого инстанса указывает на этот shared path: `data: /var/lib/olcrtc-panel/releases/data`
+3. При запуске инстанса systemd ExecStartPre копирует словари в `/var/lib/olcrtc/{id}/data/`, если они отсутствуют
+4. При старте панели метод `Reconcile()` автоматически переписывает YAML всех существующих инстансов для использования актуального `data` path
+
+Это позволяет:
+- Не дублировать словари для каждого инстанса
+- Автоматически мигрировать старые инстансы при обновлении панели
+- Сохранить совместимость с upstream контрактом `data/names` и `data/surnames`
+- Сохранить пользовательские словари (копирование происходит только при отсутствии файлов)
+
 ## Документация
 
 - [Security model](docs/security.md)

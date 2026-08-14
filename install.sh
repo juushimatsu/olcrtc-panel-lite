@@ -221,6 +221,15 @@ repair_release_permissions() {
         chown root:olcrtc "$RELEASES"
         chmod 0710 "$RELEASES"
     fi
+    if [ -d "$RELEASES/data" ]; then
+        chown root:olcrtc "$RELEASES/data"
+        chmod 0750 "$RELEASES/data"
+        for file in "$RELEASES/data/names" "$RELEASES/data/surnames"; do
+            [ -f "$file" ] || continue
+            chown root:olcrtc "$file"
+            chmod 0640 "$file"
+        done
+    fi
     current=$(readlink -f "$RELEASES/current" 2>/dev/null || true)
     [ -n "$current" ] && [ -d "$current" ] || return 0
     chown root:olcrtc "$current"
@@ -232,6 +241,15 @@ repair_release_permissions() {
     if [ -f "$current/olcrtc" ]; then
         chown root:olcrtc "$current/olcrtc"
         chmod 0750 "$current/olcrtc"
+    fi
+    if [ -d "$current/data" ]; then
+        chown root:olcrtc "$current/data"
+        chmod 0750 "$current/data"
+        for file in "$current/data/names" "$current/data/surnames"; do
+            [ -f "$file" ] || continue
+            chown root:olcrtc "$file"
+            chmod 0640 "$file"
+        done
     fi
 }
 
@@ -372,7 +390,7 @@ fi
 RELEASE_TAG=$(jq -r '.tag_name // empty' "$WORK/release.json")
 [ -n "$RELEASE_TAG" ] || { echo "GitHub returned a release without tag_name" >&2; exit 1; }
 
-for file in manifest.json SHA256SUMS "olcrtc-panel-linux-$ARCH" "olcrtc-linux-$ARCH"; do
+for file in manifest.json SHA256SUMS "olcrtc-panel-linux-$ARCH" "olcrtc-linux-$ARCH" olcrtc-names olcrtc-surnames; do
     ASSET_URL=$(jq -r --arg name "$file" '[.assets[]? | select(.name == $name) | .browser_download_url][0] // empty' "$WORK/release.json")
     [ -n "$ASSET_URL" ] || {
         echo "GitHub Release '$RELEASE_TAG' is incomplete: missing asset '$file'." >&2
@@ -380,7 +398,7 @@ for file in manifest.json SHA256SUMS "olcrtc-panel-linux-$ARCH" "olcrtc-linux-$A
     }
     curl -fL --retry 3 --connect-timeout 15 "$ASSET_URL" -o "$WORK/$file"
 done
-(cd "$WORK"; grep "  olcrtc-panel-linux-$ARCH$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-linux-$ARCH$" SHA256SUMS | sha256sum -c -)
+(cd "$WORK"; grep "  olcrtc-panel-linux-$ARCH$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-linux-$ARCH$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-names$" SHA256SUMS | sha256sum -c -; grep "  olcrtc-surnames$" SHA256SUMS | sha256sum -c -)
 BUNDLE=$(jq -r '.bundle_id // empty' "$WORK/manifest.json")
 [ -n "$BUNDLE" ] || BUNDLE=${RELEASE_VERSION:-$(date -u +%Y%m%d%H%M%S)}
 [[ "$BUNDLE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Manifest contains an invalid bundle_id" >&2; exit 1; }
@@ -449,9 +467,15 @@ repair_instance_permissions
 
 TARGET="$RELEASES/$BUNDLE"
 install -d -m 0710 -o root -g olcrtc "$TARGET"
+install -d -m 0750 -o root -g olcrtc "$TARGET/data"
 install -m 0750 -o root -g root "$WORK/olcrtc-panel-linux-$ARCH" "$TARGET/olcrtc-panel"
 install -m 0750 -o root -g olcrtc "$WORK/olcrtc-linux-$ARCH" "$TARGET/olcrtc"
+install -m 0640 -o root -g olcrtc "$WORK/olcrtc-names" "$TARGET/data/names"
+install -m 0640 -o root -g olcrtc "$WORK/olcrtc-surnames" "$TARGET/data/surnames"
 install -m 0600 "$WORK/manifest.json" "$TARGET/manifest.json"
+install -d -m 0750 -o root -g olcrtc "$RELEASES/data"
+install -m 0640 -o root -g olcrtc "$TARGET/data/names" "$RELEASES/data/names"
+install -m 0640 -o root -g olcrtc "$TARGET/data/surnames" "$RELEASES/data/surnames"
 ln -sfn "$TARGET" "$RELEASES/current"
 ln -sfn "$RELEASES/current/olcrtc-panel" /usr/local/bin/olcrtc-panel
 ln -sfn "$RELEASES/current/olcrtc" /usr/local/bin/olcrtc

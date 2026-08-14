@@ -68,18 +68,41 @@ jobs:
         run: |
           test -z "$(gofmt -l cmd internal)"
           go vet ./...
+          golangci-lint run --timeout=10m ./...
           go test -race -count=1 ./...
-      - name: Build unmodified upstream and panel
+      - name: Extract upstream data dictionaries
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           mkdir -p dist
+          if [ ! -f upstream/data/names ] || [ ! -s upstream/data/names ]; then
+            echo "upstream/data/names is missing or empty" >&2
+            exit 1
+          fi
+          if [ ! -f upstream/data/surnames ] || [ ! -s upstream/data/surnames ]; then
+            echo "upstream/data/surnames is missing or empty" >&2
+            exit 1
+          fi
+          if ! grep -q '^[[:space:]]*[^[:space:]]' upstream/data/names; then
+            echo "upstream/data/names contains no non-empty lines" >&2
+            exit 1
+          fi
+          if ! grep -q '^[[:space:]]*[^[:space:]]' upstream/data/surnames; then
+            echo "upstream/data/surnames contains no non-empty lines" >&2
+            exit 1
+          fi
+          cp upstream/data/names dist/olcrtc-names
+          cp upstream/data/surnames dist/olcrtc-surnames
+      - name: Build unmodified upstream and panel
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
           for arch in amd64 arm64; do
             (cd upstream && CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags='-s -w' -o "../dist/olcrtc-linux-$arch" ./cmd/olcrtc)
             (cd panel && CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags='-s -w' -o "../dist/olcrtc-panel-linux-$arch" ./cmd/olcrtc-panel)
           done
           cp panel/install.sh panel/uninstall.sh dist/
-          (cd dist && sha256sum olcrtc-panel-linux-* olcrtc-linux-* install.sh uninstall.sh > SHA256SUMS)
+          (cd dist && sha256sum olcrtc-panel-linux-* olcrtc-linux-* olcrtc-names olcrtc-surnames install.sh uninstall.sh > SHA256SUMS)
       - name: Create manifest
         if: steps.upstream.outputs.changed == 'true'
         shell: bash

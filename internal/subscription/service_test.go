@@ -24,7 +24,7 @@ func TestStandardRendererBindsMetadataToURI(t *testing.T) {
 	defer st.Close()
 	key := make([]byte, 32)
 	secrets, _ := security.NewSecrets(key)
-	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), filepath.Join(root, "releases"), 20)
 	ctx := context.Background()
 	node, err := manager.Create(ctx, model.Instance{Name: "RU-1", Provider: "jitsi", Transport: "datachannel", RoomID: "https://meet.example/room", DNS: "8.8.8.8:53"})
 	if err != nil {
@@ -67,7 +67,7 @@ func TestStandardRendererOmitsWBAuthTokenParameter(t *testing.T) {
 	}
 	defer st.Close()
 	secrets, _ := security.NewSecrets(make([]byte, 32))
-	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), filepath.Join(root, "releases"), 20)
 	ctx := context.Background()
 	node, err := manager.Create(ctx, model.Instance{
 		Name: "WB", Provider: "wbstream", Transport: "vp8channel",
@@ -121,7 +121,7 @@ func TestOLCBOXRendererUsesStandardURIsAndKeepsClientFeedSeparate(t *testing.T) 
 	}
 	defer st.Close()
 	secrets, _ := security.NewSecrets(make([]byte, 32))
-	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), filepath.Join(root, "releases"), 20)
 	ctx := context.Background()
 	node, err := manager.Create(ctx, model.Instance{Name: "Linked", Provider: "jitsi", Transport: "datachannel", RoomID: "https://meet.example/room", DNS: "8.8.8.8:53"})
 	if err != nil {
@@ -169,7 +169,7 @@ func TestSummaryIncludesOLCBOXOnlyEntries(t *testing.T) {
 	}
 	defer st.Close()
 	secrets, _ := security.NewSecrets(make([]byte, 32))
-	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), filepath.Join(root, "releases"), 20)
 	ctx := context.Background()
 	sub, err := st.CreateSubscription(ctx, model.Subscription{Slug: "abcdefghijklmnop", Name: "OLCBOX only", RefreshInterval: "10m", Enabled: true}, "")
 	if err != nil {
@@ -208,7 +208,7 @@ func TestBundleUsesClientSubscriptionEndpoint(t *testing.T) {
 	st, _ := store.Open(filepath.Join(root, "panel.db"))
 	defer st.Close()
 	secrets, _ := security.NewSecrets(make([]byte, 32))
-	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), filepath.Join(root, "releases"), 20)
 	ctx := context.Background()
 	sub, _ := st.CreateSubscription(ctx, model.Subscription{Slug: "abcdefghijklmnop", Name: "Test", RefreshInterval: "10m", Enabled: true}, "")
 	service := NewService(st, manager, secrets, "https://example")
@@ -227,7 +227,7 @@ func TestDeleteKeepsLocalSubscriptionWhenMirrorCleanupCannotRun(t *testing.T) {
 	st, _ := store.Open(filepath.Join(root, "panel.db"))
 	defer st.Close()
 	secrets, _ := security.NewSecrets(make([]byte, 32))
-	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), filepath.Join(root, "releases"), 20)
 	ctx := context.Background()
 	sub, err := st.CreateSubscription(ctx, model.Subscription{Slug: "abcdefghijklmnop", Name: "Test", RefreshInterval: "10m", Enabled: true, MirrorEnabled: true, MirrorStatus: "synced", MirrorPublicURL: "https://yadi.sk/d/test"}, "")
 	if err != nil {
@@ -247,7 +247,7 @@ func TestBundleIncludesEncryptedMirrorBootstrap(t *testing.T) {
 	st, _ := store.Open(filepath.Join(root, "panel.db"))
 	defer st.Close()
 	secrets, _ := security.NewSecrets(make([]byte, 32))
-	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), 20)
+	manager := instance.NewManager(st, secrets, systemd.New(false), filepath.Join(root, "instances"), filepath.Join(root, "runtime"), filepath.Join(root, "releases"), 20)
 	service := NewService(st, manager, secrets, "https://203.0.113.10:8443")
 	plainKey, encryptedKey, err := service.GenerateMirrorKey()
 	if err != nil {
