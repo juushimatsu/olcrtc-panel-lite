@@ -139,7 +139,7 @@ Upstream source не является частью runtime-репозитори�
 Каждый release bundle включает:
 - `olcrtc-panel-linux-{amd64,arm64}` — исполняемый файл панели
 - `olcrtc-linux-{amd64,arm64}` — официальный upstream бинарник
-- `olcrtc-names`, `olcrtc-surnames` — словари для генерации имён участников (извлечены из upstream `data/`)
+- `olcrtc-names`, `olcrtc-surnames` — словари для генерации имён участников (извлечены из upstream `internal/names/data/`)
 - `manifest.json` — метаданные bundle (upstream SHA, версия панели, время сборки)
 - `SHA256SUMS` — контрольные суммы всех файлов
 - `install.sh`, `uninstall.sh` — установочные скрипты

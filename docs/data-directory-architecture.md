@@ -8,7 +8,7 @@ Upstream olcRTC изменил контракт поля `data` в конфиг�
 
 ### Shared Data Location
 
-Release bundle включает словари `olcrtc-names` и `olcrtc-surnames`, извлечённые из upstream `data/`. При установке или обновлении:
+Release bundle включает словари `olcrtc-names` и `olcrtc-surnames`, извлечённые из upstream `internal/names/data/`. При установке или обновлении:
 
 ```bash
 /var/lib/olcrtc-panel/releases/
@@ -96,7 +96,7 @@ Systemd service работает от пользователя `olcrtc`, кот�
 ### Modified Files
 
 1. **CI** (`.github/workflows/daily-upstream.yml`):
-   - Извлекает `upstream/data/{names,surnames}` → `dist/olcrtc-{names,surnames}`
+   - Извлекает `upstream/internal/names/data/{names,surnames}` → `dist/olcrtc-{names,surnames}`
    - Валидирует наличие и непустоту
    - Включает в SHA256SUMS
 

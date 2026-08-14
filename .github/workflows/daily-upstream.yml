@@ -75,24 +75,24 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          if [ ! -f upstream/data/names ] || [ ! -s upstream/data/names ]; then
-            echo "upstream/data/names is missing or empty" >&2
+          if [ ! -f upstream/internal/names/data/names ] || [ ! -s upstream/internal/names/data/names ]; then
+            echo "upstream/internal/names/data/names is missing or empty" >&2
             exit 1
           fi
-          if [ ! -f upstream/data/surnames ] || [ ! -s upstream/data/surnames ]; then
-            echo "upstream/data/surnames is missing or empty" >&2
+          if [ ! -f upstream/internal/names/data/surnames ] || [ ! -s upstream/internal/names/data/surnames ]; then
+            echo "upstream/internal/names/data/surnames is missing or empty" >&2
             exit 1
           fi
-          if ! grep -q '^[[:space:]]*[^[:space:]]' upstream/data/names; then
-            echo "upstream/data/names contains no non-empty lines" >&2
+          if ! grep -q '^[[:space:]]*[^[:space:]]' upstream/internal/names/data/names; then
+            echo "upstream/internal/names/data/names contains no non-empty lines" >&2
             exit 1
           fi
-          if ! grep -q '^[[:space:]]*[^[:space:]]' upstream/data/surnames; then
-            echo "upstream/data/surnames contains no non-empty lines" >&2
+          if ! grep -q '^[[:space:]]*[^[:space:]]' upstream/internal/names/data/surnames; then
+            echo "upstream/internal/names/data/surnames contains no non-empty lines" >&2
             exit 1
           fi
-          cp upstream/data/names dist/olcrtc-names
-          cp upstream/data/surnames dist/olcrtc-surnames
+          cp upstream/internal/names/data/names dist/olcrtc-names
+          cp upstream/internal/names/data/surnames dist/olcrtc-surnames
       - name: Build unmodified upstream and panel
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
