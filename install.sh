@@ -141,7 +141,8 @@ loopback_listen() {
 }
 
 public_panel_url() {
-    local origin=$1 public_ip=$2 public_port=$3 panel_path=$4 host=$public_ip
+    local origin=$1 public_ip=$2 public_port=$3 panel_path=$4
+    local host=$public_ip
     if [ -n "$origin" ]; then
         printf '%s%s\n' "$origin" "$panel_path"
         return
