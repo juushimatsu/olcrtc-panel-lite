@@ -87,6 +87,9 @@ func Install(root string) error {
 			return fmt.Errorf("install asset %s: %w", target, err)
 		}
 	}
+	if err := migrateLegacyWBProfile(root); err != nil {
+		return err
+	}
 	if err := repairExistingWBRuntime(root); err != nil {
 		return err
 	}
@@ -103,6 +106,9 @@ func RefreshWBAutomation(root string) error {
 	}
 	root, err := filepath.Abs(root)
 	if err != nil {
+		return err
+	}
+	if err := migrateLegacyWBProfile(root); err != nil {
 		return err
 	}
 	for _, source := range []string{
@@ -148,6 +154,38 @@ func RefreshWBAutomation(root string) error {
 	}
 	if err := atomicWrite(filepath.Join(resolved, "worker.mjs"), worker, 0o644); err != nil {
 		return fmt.Errorf("refresh WB runtime worker: %w", err)
+	}
+	return nil
+}
+
+func migrateLegacyWBProfile(root string) error {
+	stateRoot := filepath.Join(root, filepath.FromSlash("var/lib/olcrtc-wb"))
+	legacy := filepath.Join(stateRoot, "profile")
+	targetRoot := filepath.Join(stateRoot, "profiles")
+	target := filepath.Join(targetRoot, "wbstream")
+	legacyInfo, err := os.Lstat(legacy)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect legacy WB profile: %w", err)
+	}
+	if !legacyInfo.IsDir() || legacyInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("legacy WB profile is not a real directory: %s", legacy)
+	}
+	if targetInfo, err := os.Lstat(target); err == nil {
+		if !targetInfo.IsDir() || targetInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("WB profile target is not a real directory: %s", target)
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect WB profile target: %w", err)
+	}
+	if err := os.MkdirAll(targetRoot, 0o700); err != nil {
+		return fmt.Errorf("create automation profiles directory: %w", err)
+	}
+	if err := os.Rename(legacy, target); err != nil {
+		return fmt.Errorf("migrate legacy WB profile: %w", err)
 	}
 	return nil
 }

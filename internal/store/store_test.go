@@ -19,6 +19,37 @@ func openTestStore(t *testing.T) *Store {
 	return st
 }
 
+func TestOpenReadOnlyReadsWithoutAllowingWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "panel.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting(context.Background(), "panel_path", "/control", false); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	value, err := st.SettingOrDefault(context.Background(), "panel_path", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "/control" {
+		t.Fatalf("panel_path = %q, want /control", value)
+	}
+	if err := st.SetSetting(context.Background(), "panel_path", "/changed", false); err == nil {
+		t.Fatal("read-only store accepted a write")
+	}
+}
+
 func TestMigrationsAndTrafficIdempotency(t *testing.T) {
 	st := openTestStore(t)
 	ctx := context.Background()

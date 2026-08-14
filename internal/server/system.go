@@ -13,6 +13,7 @@ import (
 
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/backup"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/certificates"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/config"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/redact"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/sysinfo"
 )
@@ -71,7 +72,7 @@ func (s *Server) handleRegenerateCertificate(w http.ResponseWriter, r *http.Requ
 	}
 	s.cfg.PublicIP = ip
 	_ = s.store.SetSetting(r.Context(), "public_ip", ip, false)
-	s.subscriptions.SetBaseURL(publicBaseURL(s.cfg))
+	s.subscriptions.SetBaseURL(s.cfg.PublicSubscriptionBaseURL())
 	audit(s, r, "certificate.regenerate", "system", "tls", "success", "public IP changed")
 	writeJSON(w, http.StatusOK, info)
 }
@@ -151,7 +152,7 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	id := filepath.Base(path)
 	audit(s, r, "backup.create", "backup", id, "success", "ordinary backup without private keys")
-	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "download_url": "/api/v1/system/backup/" + id})
+	writeJSON(w, http.StatusCreated, map[string]string{"id": id, "download_url": config.JoinURLPath(s.cfg.PanelPath, "/api/v1/system/backup/"+id)})
 }
 
 func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {

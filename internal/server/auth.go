@@ -131,13 +131,23 @@ func (s *Server) handleDeleteSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setSessionCookies(w http.ResponseWriter, token, csrf string, expires time.Time) {
-	http.SetCookie(w, &http.Cookie{Name: s.cfg.CookieName, Value: token, Path: "/", Expires: expires, MaxAge: int(time.Until(expires).Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	http.SetCookie(w, &http.Cookie{Name: s.cfg.CookieName + "_csrf", Value: csrf, Path: "/", Expires: expires, MaxAge: int(time.Until(expires).Seconds()), Secure: true, HttpOnly: false, SameSite: http.SameSiteStrictMode})
+	if s.cfg.PanelPath != "/" {
+		s.expireSessionCookies(w, "/")
+	}
+	http.SetCookie(w, &http.Cookie{Name: s.cfg.CookieName, Value: token, Path: s.cfg.PanelPath, Expires: expires, MaxAge: int(time.Until(expires).Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: s.cfg.CookieName + "_csrf", Value: csrf, Path: s.cfg.PanelPath, Expires: expires, MaxAge: int(time.Until(expires).Seconds()), Secure: true, HttpOnly: false, SameSite: http.SameSiteStrictMode})
 }
 
 func (s *Server) clearSessionCookies(w http.ResponseWriter) {
+	s.expireSessionCookies(w, s.cfg.PanelPath)
+	if s.cfg.PanelPath != "/" {
+		s.expireSessionCookies(w, "/")
+	}
+}
+
+func (s *Server) expireSessionCookies(w http.ResponseWriter, path string) {
 	for _, name := range []string{s.cfg.CookieName, s.cfg.CookieName + "_csrf"} {
-		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", MaxAge: -1, Secure: true, HttpOnly: name == s.cfg.CookieName, SameSite: http.SameSiteStrictMode})
+		http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: path, MaxAge: -1, Secure: true, HttpOnly: name == s.cfg.CookieName, SameSite: http.SameSiteStrictMode})
 	}
 }
 

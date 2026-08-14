@@ -38,6 +38,118 @@ valid_port() {
     [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
+valid_listen() {
+    local value=$1
+    [[ "$value" =~ ^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]*):([0-9]+)$ ]] || return 1
+    valid_port "${BASH_REMATCH[2]}"
+}
+
+listen_port() {
+    local value=$1
+    printf '%s\n' "${value##*:}"
+}
+
+listen_host() {
+    local value=$1 host=${1%:*}
+    host=${host#[}
+    host=${host%]}
+    printf '%s\n' "$host"
+}
+
+valid_mount_path() {
+    local value=$1 allow_root=$2 segment remainder
+    if [ "$value" = / ]; then
+        [ "$allow_root" = true ]
+        return
+    fi
+    [[ "$value" =~ ^(/[A-Za-z0-9._~-]+)+$ ]] || return 1
+    remainder=${value#/}
+    while [ -n "$remainder" ]; do
+        segment=${remainder%%/*}
+        [ "$segment" != . ] && [ "$segment" != .. ] || return 1
+        if [ "$remainder" = "$segment" ]; then
+            break
+        fi
+        remainder=${remainder#*/}
+    done
+}
+
+paths_overlap() {
+    local left=$1 right=$2
+    [ "$left" = "$right" ] || [[ "$left" == "$right/"* ]] || [[ "$right" == "$left/"* ]]
+}
+
+valid_public_origin() {
+    local value=$1 authority port
+    [ -z "$value" ] && return 0
+    [[ "$value" =~ ^https://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]+)?$ ]] || return 1
+    authority=${value#https://}
+    if [[ "$authority" =~ :([0-9]+)$ ]]; then
+        port=${BASH_REMATCH[1]}
+        valid_port "$port"
+    fi
+}
+
+config_value() {
+    local key=$1
+    [ -f "$CONFIG" ] || return 0
+    awk -v wanted="$key" '
+        $0 ~ "^[[:space:]]*" wanted ":[[:space:]]*" {
+            line = $0
+            sub(/^[^:]*:[[:space:]]*/, "", line)
+            sub(/[[:space:]]+#.*$/, "", line)
+            gsub(/^"|"$/, "", line)
+            print line
+            exit
+        }
+    ' "$CONFIG"
+}
+
+panel_health_url_from_values() {
+    local listen=$1 panel_path=$2 host port
+    host=$(listen_host "$listen")
+    port=$(listen_port "$listen")
+    case "$host" in
+        ''|0.0.0.0) host=127.0.0.1 ;;
+        ::) host=::1 ;;
+    esac
+    [[ "$host" == *:* ]] && host="[$host]"
+    [ "$panel_path" = / ] || panel_path="$panel_path/"
+    printf 'https://%s:%s%s\n' "$host" "$port" "$panel_path"
+}
+
+panel_health_url() {
+    local binary=${1:-/usr/local/bin/olcrtc-panel} output
+    if [ -x "$binary" ]; then
+        if output=$("$binary" health-url --config "$CONFIG" 2>&1); then
+            [ -n "$output" ] || { echo "health-url returned an empty URL" >&2; return 1; }
+            printf '%s\n' "$output"
+            return 0
+        fi
+        case "$output" in
+            *'unknown command "health-url"'*) ;;
+            *) printf '%s\n' "$output" >&2; return 1 ;;
+        esac
+    fi
+    panel_health_url_from_values "$PANEL_LISTEN" "$PANEL_PATH"
+}
+
+loopback_listen() {
+    local host
+    host=$(listen_host "$1")
+    case "$host" in 127.*|::1|localhost) return 0 ;; *) return 1 ;; esac
+}
+
+public_panel_url() {
+    local origin=$1 public_ip=$2 public_port=$3 panel_path=$4 host=$public_ip
+    if [ -n "$origin" ]; then
+        printf '%s%s\n' "$origin" "$panel_path"
+        return
+    fi
+    [[ "$host" == *:* ]] && host="[$host]"
+    printf 'https://%s:%s%s\n' "$host" "$public_port" "$panel_path"
+}
+
 tcp_port_in_use() {
     local port=$1
     ss -H -ltn | awk -v wanted="$port" '
@@ -76,17 +188,26 @@ choose_panel_port() {
 }
 
 wait_for_panel() {
-    local port=$1
+    local url=$1
     local attempt
 
     for ((attempt = 0; attempt < 20; attempt++)); do
         if systemctl is-active --quiet olcrtc-panel.service &&
-            curl -kfsS --connect-timeout 1 --max-time 2 "https://127.0.0.1:$port/" >/dev/null 2>&1; then
+            curl -kfsS --connect-timeout 1 --max-time 2 "$url" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
     done
     return 1
+}
+
+prepare_automation_profiles() {
+    id olcrtc-wb >/dev/null 2>&1 || return 0
+    install -d -m 0700 -o olcrtc-wb -g olcrtc-wb \
+        /var/lib/olcrtc-wb \
+        /var/lib/olcrtc-wb/profiles \
+        /var/lib/olcrtc-wb/profiles/wbstream \
+        /var/lib/olcrtc-wb/profiles/telemost
 }
 
 repair_release_permissions() {
@@ -178,7 +299,7 @@ if [ "$MODE" = status ]; then
     if command -v olcrtc-panel >/dev/null 2>&1; then
         echo "version=$(olcrtc-panel version)"
         systemctl --no-pager --full status olcrtc-panel.service || true
-        [ -f "$CONFIG" ] && awk -F': ' '/^public_ip:|^public_port:/{gsub(/"/,"",$2); print $1"="$2}' "$CONFIG"
+        [ -f "$CONFIG" ] && awk -F': ' '/^listen:|^public_ip:|^public_port:|^public_origin:|^panel_path:|^subscription_path:/{gsub(/"/,"",$2); print $1"="$2}' "$CONFIG"
     else
         echo "olcrtc-panel is not installed"
     fi
@@ -269,17 +390,52 @@ if [ "$MODE" = update ] && [ -x /usr/local/bin/olcrtc-panel ] && [ -x /usr/lib/o
     exit
 fi
 
-CONFIGURED_PORT=""
-if [ -f "$CONFIG" ]; then
-    CONFIGURED_PORT=$(awk -F: '/^[[:space:]]*public_port:/ {gsub(/[[:space:]\"]/, "", $2); print $2; exit}' "$CONFIG")
+CONFIG_EXISTS=false
+[ -f "$CONFIG" ] && CONFIG_EXISTS=true
+if $CONFIG_EXISTS; then
+    PANEL_LISTEN=$(config_value listen)
+    PUBLIC_IP=$(config_value public_ip)
+    PUBLIC_PORT=$(config_value public_port)
+    PUBLIC_ORIGIN=$(config_value public_origin)
+    PANEL_PATH=$(config_value panel_path)
+    SUBSCRIPTION_PATH=$(config_value subscription_path)
+    PANEL_LISTEN=${PANEL_LISTEN:-0.0.0.0:${PUBLIC_PORT:-8443}}
+    PUBLIC_PORT=${PUBLIC_PORT:-$(listen_port "$PANEL_LISTEN")}
+    PANEL_PATH=${PANEL_PATH:-/}
+    SUBSCRIPTION_PATH=${SUBSCRIPTION_PATH:-/sub}
+    valid_listen "$PANEL_LISTEN" || { echo "Invalid listen in existing config: $PANEL_LISTEN" >&2; exit 2; }
+    valid_port "$PUBLIC_PORT" || { echo "Invalid public_port in existing config: $PUBLIC_PORT" >&2; exit 2; }
+else
+    PUBLIC_ORIGIN=${OLCRTC_PUBLIC_ORIGIN:-}
+    PANEL_PATH=${OLCRTC_PANEL_PATH:-/}
+    SUBSCRIPTION_PATH=${OLCRTC_SUBSCRIPTION_PATH:-/sub}
+    valid_public_origin "$PUBLIC_ORIGIN" || { echo "Invalid OLCRTC_PUBLIC_ORIGIN: expected an HTTPS origin without a path" >&2; exit 2; }
+    valid_mount_path "$PANEL_PATH" true || { echo "Invalid OLCRTC_PANEL_PATH" >&2; exit 2; }
+    valid_mount_path "$SUBSCRIPTION_PATH" false || { echo "Invalid OLCRTC_SUBSCRIPTION_PATH" >&2; exit 2; }
+    if [ "$PANEL_PATH" != / ] && paths_overlap "$PANEL_PATH" "$SUBSCRIPTION_PATH"; then
+        echo "Panel and subscription paths must not overlap" >&2
+        exit 2
+    fi
+    if [ -n "${OLCRTC_LISTEN:-}" ]; then
+        PANEL_LISTEN=$OLCRTC_LISTEN
+        valid_listen "$PANEL_LISTEN" || { echo "Invalid OLCRTC_LISTEN" >&2; exit 2; }
+        PANEL_PORT=$(listen_port "$PANEL_LISTEN")
+        ss -H -ltn >/dev/null || { echo "Could not inspect listening TCP ports" >&2; exit 1; }
+        tcp_port_in_use "$PANEL_PORT" && { echo "TCP port $PANEL_PORT from OLCRTC_LISTEN is already in use" >&2; exit 1; }
+    else
+        PREFERRED_PORT=${OLCRTC_PUBLIC_PORT:-8443}
+        valid_port "$PREFERRED_PORT" || { echo "Invalid panel port: $PREFERRED_PORT" >&2; exit 2; }
+        ss -H -ltn >/dev/null || { echo "Could not inspect listening TCP ports" >&2; exit 1; }
+        PANEL_PORT=$(choose_panel_port "$PREFERRED_PORT") || { echo "Could not find a free TCP port" >&2; exit 1; }
+        PANEL_LISTEN="0.0.0.0:$PANEL_PORT"
+        if [ "$PANEL_PORT" != "$PREFERRED_PORT" ]; then
+            echo "TCP port $PREFERRED_PORT is already in use; selected free port $PANEL_PORT."
+        fi
+    fi
+    PUBLIC_PORT=${OLCRTC_PUBLIC_PORT:-$PANEL_PORT}
+    valid_port "$PUBLIC_PORT" || { echo "Invalid OLCRTC_PUBLIC_PORT" >&2; exit 2; }
 fi
-PREFERRED_PORT=${OLCRTC_PUBLIC_PORT:-${CONFIGURED_PORT:-8443}}
-valid_port "$PREFERRED_PORT" || { echo "Invalid panel port: $PREFERRED_PORT" >&2; exit 2; }
-ss -H -ltn >/dev/null || { echo "Could not inspect listening TCP ports" >&2; exit 1; }
-PANEL_PORT=$(choose_panel_port "$PREFERRED_PORT") || { echo "Could not find a free TCP port" >&2; exit 1; }
-if [ "$PANEL_PORT" != "$PREFERRED_PORT" ]; then
-    echo "TCP port $PREFERRED_PORT is already in use; selected free port $PANEL_PORT."
-fi
+PANEL_PORT=$(listen_port "$PANEL_LISTEN")
 
 id olcrtc >/dev/null 2>&1 || useradd --system --home-dir /var/lib/olcrtc --shell /usr/sbin/nologin olcrtc
 id olcrtc-wb >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/olcrtc-wb --shell /usr/sbin/nologin olcrtc-wb
@@ -302,7 +458,7 @@ ln -sfn "$RELEASES/current/olcrtc" /usr/local/bin/olcrtc
 printf '%s\n' "$REPOSITORY" > /etc/olcrtc-panel/repository
 chmod 0600 /etc/olcrtc-panel/repository
 
-PUBLIC_IP=${OLCRTC_PUBLIC_IP:-}
+PUBLIC_IP=${PUBLIC_IP:-${OLCRTC_PUBLIC_IP:-}}
 if [ -z "$PUBLIC_IP" ]; then
     PUBLIC_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
 fi
@@ -311,11 +467,17 @@ if [ -z "$PUBLIC_IP" ]; then
 fi
 [ -n "$PUBLIC_IP" ] || { echo "Could not detect public IP. Set OLCRTC_PUBLIC_IP." >&2; exit 1; }
 
-if [ ! -f "$CONFIG" ]; then
+if ! $CONFIG_EXISTS; then
     cat > "$CONFIG" <<EOF
-listen: "0.0.0.0:$PANEL_PORT"
+listen: "$PANEL_LISTEN"
 public_ip: "$PUBLIC_IP"
-public_port: $PANEL_PORT
+public_port: $PUBLIC_PORT
+public_origin: "$PUBLIC_ORIGIN"
+panel_path: "$PANEL_PATH"
+subscription_path: "$SUBSCRIPTION_PATH"
+trusted_proxies:
+  - "127.0.0.1/32"
+  - "::1/128"
 database_path: "/var/lib/olcrtc-panel/panel.db"
 master_key_path: "/etc/olcrtc-panel/master.key"
 instances_dir: "/etc/olcrtc-panel/instances"
@@ -333,14 +495,10 @@ upstream_sha: "$(jq -r '.upstream_sha // ""' "$WORK/manifest.json")"
 panel_version: "$(jq -r '.panel_version // "unknown"' "$WORK/manifest.json")"
 EOF
     chmod 0600 "$CONFIG"
-elif [ "$CONFIGURED_PORT" != "$PANEL_PORT" ]; then
-    sed -i -E \
-        -e "s|^[[:space:]]*listen:.*|listen: \"0.0.0.0:$PANEL_PORT\"|" \
-        -e "s|^[[:space:]]*public_port:.*|public_port: $PANEL_PORT|" \
-        "$CONFIG"
 fi
 
 /usr/local/bin/olcrtc-panel assets install --root /
+prepare_automation_profiles
 if [ -f /var/lib/olcrtc-panel/panel.db ]; then
     CREDS="credentials=preserved"
 else
@@ -349,14 +507,17 @@ fi
 CERTS=$(/usr/local/bin/olcrtc-panel certificate ensure --config "$CONFIG")
 systemctl daemon-reload
 systemctl enable --now olcrtc-panel.service
-if ! wait_for_panel "$PANEL_PORT"; then
-    echo "olcRTC Panel Lite failed to start HTTPS on port $PANEL_PORT." >&2
+HEALTH_URL=$(panel_health_url /usr/local/bin/olcrtc-panel)
+if ! wait_for_panel "$HEALTH_URL"; then
+    echo "olcRTC Panel Lite failed health check at $HEALTH_URL." >&2
     systemctl --no-pager --full status olcrtc-panel.service >&2 || true
     journalctl -u olcrtc-panel.service -n 50 --no-pager >&2 || true
     exit 1
 fi
 
-if $CONFIGURE_FIREWALL; then
+if loopback_listen "$PANEL_LISTEN"; then
+    echo "Firewall rule skipped: panel listen address is loopback-only."
+elif $CONFIGURE_FIREWALL; then
     if command -v ufw >/dev/null 2>&1; then ufw allow "$PANEL_PORT/tcp"; elif command -v firewall-cmd >/dev/null 2>&1; then firewall-cmd --permanent --add-port="$PANEL_PORT/tcp"; firewall-cmd --reload; fi
 else
     if command -v ufw >/dev/null 2>&1; then echo "Firewall command: sudo ufw allow $PANEL_PORT/tcp"; elif command -v firewall-cmd >/dev/null 2>&1; then echo "Firewall command: sudo firewall-cmd --permanent --add-port=$PANEL_PORT/tcp && sudo firewall-cmd --reload"; fi
@@ -364,7 +525,7 @@ fi
 
 echo
 echo "olcRTC Panel Lite installed"
-echo "url=https://$PUBLIC_IP:$PANEL_PORT"
+echo "url=$(public_panel_url "$PUBLIC_ORIGIN" "$PUBLIC_IP" "$PUBLIC_PORT" "$PANEL_PATH")"
 printf '%s\n' "$CREDS"
 printf '%s\n' "$CERTS"
 echo "No olcRTC instance was created. Create the first one in the UI."

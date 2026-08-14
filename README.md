@@ -48,6 +48,19 @@ curl -fsSL https://raw.githubusercontent.com/juushimatsu/olcrtc-panel-lite/maste
   | sudo OLCRTC_PUBLIC_PORT=9443 bash
 ```
 
+Для домена за reverse proxy можно сразу ограничить listener loopback и задать независимые публичные пути:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/juushimatsu/olcrtc-panel-lite/master/install.sh \
+  | sudo OLCRTC_PUBLIC_ORIGIN=https://example.com \
+      OLCRTC_PANEL_PATH=/control-a8f3 \
+      OLCRTC_SUBSCRIPTION_PATH=/feeds-b19c \
+      OLCRTC_LISTEN=127.0.0.1:8443 \
+      OLCRTC_PUBLIC_PORT=443 bash
+```
+
+При loopback listener установщик не открывает и не предлагает открывать firewall-порт. Обновление сохраняет существующий config. Готовые Nginx и Caddy конфигурации приведены в [документации reverse proxy](docs/reverse-proxy.md).
+
 Полезные режимы:
 
 ```bash
@@ -127,12 +140,13 @@ Upstream source не является частью runtime-репозитори�
 - [URI и подписки](docs/subscriptions.md)
 - [Совместимость клиентов](docs/client-compatibility.md)
 - [Эксплуатация и восстановление](docs/operations.md)
+- [Reverse proxy и скрытые пути](docs/reverse-proxy.md)
 - [Release manifest schema](docs/manifest.schema.json)
 - [HTTP API](docs/api.md)
 
 ## Ограничения первой версии
 
-- нет доменов, ACME/Let's Encrypt, multi-user/RBAC, 2FA и billing;
+- панель сама не выпускает ACME/Let's Encrypt сертификаты; домен и публичный TLS завершаются на Nginx/Caddy;
 - quota/expiry только отображаются и не останавливают общий инстанс;
 - Playwright automation недоступна на arm64, ручной Telemost Room ID и WB Room ID/token остаются доступны;
 - private CA необходимо отдельно установить в trust store клиента и сверить fingerprint;

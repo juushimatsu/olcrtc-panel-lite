@@ -16,6 +16,25 @@ func (s *Store) SetSetting(ctx context.Context, key, value string, encrypted boo
 	return nil
 }
 
+// SetSettings atomically upserts a group of plain settings.
+func (s *Store) SetSettings(ctx context.Context, values map[string]string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin settings transaction: %w", err)
+	}
+	defer tx.Rollback()
+	updatedAt := formatTime(time.Now())
+	for key, value := range values {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO settings(key, value, encrypted, updated_at) VALUES(?, ?, 0, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, encrypted=0, updated_at=excluded.updated_at`, key, value, updatedAt); err != nil {
+			return fmt.Errorf("set setting %s: %w", key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit settings transaction: %w", err)
+	}
+	return nil
+}
+
 // Setting returns a setting and whether its value is encrypted.
 func (s *Store) Setting(ctx context.Context, key string) (string, bool, error) {
 	var value string

@@ -465,7 +465,7 @@ func (s *Server) handlePublicSubscriptionOpen(w http.ResponseWriter, r *http.Req
 		s.publicSubscriptionError(w, r, subscription.ErrDisabled)
 		return
 	}
-	source := strings.TrimSuffix(publicBaseURL(s.cfg), "/") + "/sub/" + sub.Slug
+	source := s.cfg.PublicSubscriptionBaseURL() + "/" + sub.Slug
 	target := url.URL{Scheme: "olcrtc", Host: "subscription", RawQuery: url.Values{"url": {source}, "name": {sub.Name}}.Encode()}
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, target.String(), http.StatusFound)
@@ -499,7 +499,7 @@ func (s *Server) publicSubscriptionURL(slug, format string) string {
 	if format == "olcbox" {
 		suffix = "/olcbox"
 	}
-	return strings.TrimSuffix(publicBaseURL(s.cfg), "/") + "/sub/" + slug + suffix
+	return s.cfg.PublicSubscriptionBaseURL() + "/" + slug + suffix
 }
 
 // setSubscriptionRefreshHeader is consumed by OLCBOX's auto-refresh logic.
@@ -590,12 +590,5 @@ func (s *Server) subscriptionError(w http.ResponseWriter, r *http.Request, err e
 }
 
 func publicBaseURL(cfg config.Config) string {
-	host := cfg.PublicIP
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	return "https://" + host + ":" + strconv.Itoa(cfg.PublicPort)
+	return cfg.PublicBaseURL()
 }

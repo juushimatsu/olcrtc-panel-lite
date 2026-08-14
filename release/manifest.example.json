@@ -1,6 +1,6 @@
 {
   "bundle_id": "bundle-20260716-01234567",
-  "panel_version": "0.1.0",
+  "panel_version": "0.3.0",
   "upstream_repository": "https://github.com/openlibrecommunity/olcrtc",
   "upstream_branch": "master",
   "upstream_sha": "0123456789abcdef0123456789abcdef01234567",

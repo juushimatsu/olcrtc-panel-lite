@@ -16,11 +16,19 @@ import (
 
 // Status describes the source-of-truth service state.
 type Status struct {
-	State         string `json:"state"`
-	SubState      string `json:"sub_state"`
-	UptimeSeconds int64  `json:"uptime_seconds"`
-	IngressBytes  int64  `json:"ingress_bytes"`
-	EgressBytes   int64  `json:"egress_bytes"`
+	State                string     `json:"state"`
+	SubState             string     `json:"sub_state"`
+	UptimeSeconds        int64      `json:"uptime_seconds"`
+	ProcessUptimeSeconds int64      `json:"process_uptime_seconds"`
+	UptimeSource         string     `json:"uptime_source"`
+	ProcessUptimeSource  string     `json:"process_uptime_source"`
+	StartedAt            *time.Time `json:"started_at,omitempty"`
+	ObservedAt           time.Time  `json:"observed_at"`
+	MainPID              int64      `json:"main_pid"`
+	RestartCount         uint64     `json:"restart_count"`
+	InvocationID         string     `json:"invocation_id"`
+	IngressBytes         int64      `json:"ingress_bytes"`
+	EgressBytes          int64      `json:"egress_bytes"`
 }
 
 // Controller is the restricted lifecycle interface used by the panel.
@@ -59,11 +67,20 @@ func unit(id int64) (string, error) {
 // Status reads ActiveState from systemd.
 func (m *Manager) Status(ctx context.Context, id int64) (Status, error) {
 	if !m.enabled || runtime.GOOS != "linux" {
+		observedAt := time.Now().UTC()
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		status, ok := m.states[id]
 		if !ok {
 			status = Status{State: "stopped", SubState: "development"}
+		}
+		status.ObservedAt = observedAt
+		if status.State != "running" {
+			status.UptimeSource = "inactive"
+			status.ProcessUptimeSource = "inactive"
+		} else if status.UptimeSource == "" {
+			status.UptimeSource = "development"
+			status.ProcessUptimeSource = "development"
 		}
 		return status, nil
 	}
@@ -71,64 +88,117 @@ func (m *Manager) Status(ctx context.Context, id int64) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	out, err := exec.CommandContext(ctx, "systemctl", "show", name, "--property=ActiveState,SubState,ExecMainStartTimestampMonotonic,ActiveEnterTimestampMonotonic,ActiveEnterTimestamp,IPIngressBytes,IPEgressBytes").Output()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", "--timestamp=unix", name, "--property=ActiveState,SubState,ActiveEnterTimestampMonotonic,ExecMainStartTimestampMonotonic,ActiveEnterTimestampUSec,ActiveEnterTimestamp,MainPID,NRestarts,InvocationID,IPIngressBytes,IPEgressBytes").Output()
 	if err != nil {
-		return Status{State: "unknown"}, fmt.Errorf("systemctl show: %w", err)
+		return Status{State: "unknown", UptimeSource: "unavailable", ProcessUptimeSource: "unavailable", ObservedAt: time.Now().UTC()}, fmt.Errorf("systemctl show: %w", err)
 	}
 	values := ParseShow(string(out))
-	status := Status{State: "unknown"}
+	nowMicros, monotonicOK := monotonicMicros()
+	return statusFromShow(values, nowMicros, monotonicOK, time.Now().UTC()), nil
+}
+
+func statusFromShow(values map[string]string, nowMicros uint64, monotonicOK bool, observedAt time.Time) Status {
+	status := Status{State: "unknown", ObservedAt: observedAt.UTC(), UptimeSource: "unavailable", ProcessUptimeSource: "unavailable"}
 	status.State = mapState(values["ActiveState"])
 	status.SubState = values["SubState"]
-	if status.State == "running" {
-		started := values["ExecMainStartTimestampMonotonic"]
-		if started == "" || started == "0" {
-			started = values["ActiveEnterTimestampMonotonic"]
-		}
-		if nowMicros, ok := monotonicMicros(); ok {
-			status.UptimeSeconds = elapsedMonotonic(started, nowMicros)
-		}
-		if status.UptimeSeconds == 0 {
-			status.UptimeSeconds = uptimeFromWallClock(values["ActiveEnterTimestamp"])
-		}
-	}
+	status.MainPID, _ = strconv.ParseInt(strings.TrimSpace(values["MainPID"]), 10, 64)
+	status.RestartCount, _ = strconv.ParseUint(strings.TrimSpace(values["NRestarts"]), 10, 64)
+	status.InvocationID = strings.TrimSpace(values["InvocationID"])
 	status.IngressBytes, _ = strconv.ParseInt(values["IPIngressBytes"], 10, 64)
 	status.EgressBytes, _ = strconv.ParseInt(values["IPEgressBytes"], 10, 64)
-	return status, nil
+	if status.State != "running" {
+		status.UptimeSource = "inactive"
+		status.ProcessUptimeSource = "inactive"
+		return status
+	}
+
+	if monotonicOK {
+		if elapsedMicros, ok := elapsedMonotonicMicros(values["ActiveEnterTimestampMonotonic"], nowMicros); ok {
+			status.UptimeSeconds = int64(elapsedMicros / 1_000_000)
+			startedAt := status.ObservedAt.Add(-time.Duration(elapsedMicros) * time.Microsecond)
+			status.StartedAt = &startedAt
+			status.UptimeSource = "active_enter_monotonic"
+		}
+		if elapsedMicros, ok := elapsedMonotonicMicros(values["ExecMainStartTimestampMonotonic"], nowMicros); ok && status.MainPID > 0 {
+			status.ProcessUptimeSeconds = int64(elapsedMicros / 1_000_000)
+			status.ProcessUptimeSource = "exec_main_start_monotonic"
+		}
+	}
+	if status.UptimeSource == "unavailable" {
+		if startedAt, ok := systemdTimestampUSec(values["ActiveEnterTimestampUSec"], values["ActiveEnterTimestamp"]); ok {
+			status.StartedAt = &startedAt
+			status.UptimeSeconds = elapsedWallClock(startedAt, status.ObservedAt)
+			status.UptimeSource = "active_enter_usec"
+		}
+	}
+	return status
 }
 
 func elapsedMonotonic(started string, nowMicros uint64) int64 {
-	startMicros, err := strconv.ParseUint(strings.TrimSpace(started), 10, 64)
-	if err != nil || startMicros == 0 || nowMicros <= startMicros {
+	elapsedMicros, ok := elapsedMonotonicMicros(started, nowMicros)
+	if !ok {
 		return 0
 	}
-	return int64((nowMicros - startMicros) / 1_000_000)
+	return int64(elapsedMicros / 1_000_000)
 }
 
-// uptimeFromWallClock parses the systemd ActiveEnterTimestamp wall-clock value
-// and returns elapsed seconds.  The format systemd emits is
-// "Mon 2006-01-02 15:04:05 MST" (en_US locale) or an empty/n/a string for
-// units that have never been active.
-func uptimeFromWallClock(entered string) int64 {
-	entered = strings.TrimSpace(entered)
-	if entered == "" || entered == "n/a" {
-		return 0
+func elapsedMonotonicMicros(started string, nowMicros uint64) (uint64, bool) {
+	startMicros, err := strconv.ParseUint(strings.TrimSpace(started), 10, 64)
+	if err != nil || startMicros == 0 || nowMicros <= startMicros {
+		return 0, false
 	}
-	// systemd prints the day-of-week abbreviated name before the date.
-	// Try both with and without day prefix to be locale-tolerant.
-	formats := []string{
-		"Mon 2006-01-02 15:04:05 MST",
-		"2006-01-02 15:04:05 MST",
-	}
-	for _, layout := range formats {
-		t, err := time.Parse(layout, entered)
-		if err == nil {
-			if s := int64(time.Since(t).Seconds()); s > 0 {
-				return s
+	return nowMicros - startMicros, true
+}
+
+func systemdTimestampUSec(values ...string) (time.Time, bool) {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if strings.HasPrefix(value, "@") {
+			if micros, ok := parseUnixSecondsMicros(strings.TrimPrefix(value, "@")); ok {
+				return time.UnixMicro(micros).UTC(), true
 			}
-			return 0
+		}
+		integer, err := strconv.ParseInt(value, 10, 64)
+		if err == nil && integer > 0 {
+			if integer < 100_000_000_000 {
+				return time.Unix(integer, 0).UTC(), true
+			}
+			return time.UnixMicro(integer).UTC(), true
 		}
 	}
-	return 0
+	return time.Time{}, false
+}
+
+func parseUnixSecondsMicros(value string) (int64, bool) {
+	secondsText, fractionText, _ := strings.Cut(value, ".")
+	seconds, err := strconv.ParseInt(secondsText, 10, 64)
+	if err != nil || seconds <= 0 {
+		return 0, false
+	}
+	if len(fractionText) > 6 {
+		fractionText = fractionText[:6]
+	}
+	for len(fractionText) < 6 {
+		fractionText += "0"
+	}
+	fraction := int64(0)
+	if fractionText != "" {
+		fraction, err = strconv.ParseInt(fractionText, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+	}
+	if seconds > (1<<63-1-fraction)/1_000_000 {
+		return 0, false
+	}
+	return seconds*1_000_000 + fraction, true
+}
+
+func elapsedWallClock(startedAt, observedAt time.Time) int64 {
+	if startedAt.IsZero() || !observedAt.After(startedAt) {
+		return 0
+	}
+	return int64(observedAt.Sub(startedAt) / time.Second)
 }
 
 func mapState(active string) string {

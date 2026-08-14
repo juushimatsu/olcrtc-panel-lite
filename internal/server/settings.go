@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -22,21 +23,25 @@ import (
 	"time"
 
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/certificates"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/config"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/redact"
 )
 
 var bundlePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 const (
-	wbNoVNCAddress   = "127.0.0.1:6080"
-	wbNoVNCURL       = "/wb/novnc/vnc.html?autoconnect=true&resize=scale&path=wb/novnc/websockify"
-	wbInstallDir     = "/opt/olcrtc-panel/wb"
-	wbRuntimeDir     = "/run/olcrtc-wb"
-	wbProfileDir     = "/var/lib/olcrtc-wb/profile"
-	wbSessionService = "olcrtc-wb-session.service"
-	wbJobPath        = wbRuntimeDir + "/job.json"
-	wbStatePath      = wbRuntimeDir + "/state.json"
-	wbControlPath    = wbRuntimeDir + "/control.json"
+	wbNoVNCAddress         = "127.0.0.1:6080"
+	wbInstallDir           = "/opt/olcrtc-panel/wb"
+	wbRuntimeDir           = "/run/olcrtc-wb"
+	automationProfilesDir  = "/var/lib/olcrtc-wb/profiles"
+	legacyWBProfileDir     = "/var/lib/olcrtc-wb/profile"
+	wbSessionService       = "olcrtc-wb-session.service"
+	wbJobPath              = wbRuntimeDir + "/job.json"
+	wbStatePath            = wbRuntimeDir + "/state.json"
+	wbControlPath          = wbRuntimeDir + "/control.json"
+	automationWBProvider   = "wbstream"
+	automationTeleProvider = "telemost"
+	automationSessionKey   = "wb_session_provider"
 )
 
 var wbSessionStateMu sync.Mutex
@@ -64,6 +69,20 @@ func (s *Server) routesSettings(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/wb/profile/reset", s.requireAuth(http.HandlerFunc(s.handleWBProfileReset)))
 	mux.Handle("POST /api/v1/wb/token/refresh", s.requireAuth(http.HandlerFunc(s.handleWBTokenRefresh)))
 
+	// Canonical automation API. The /wb routes above remain compatibility aliases.
+	mux.Handle("GET /api/v1/automation/components", s.requireAuth(http.HandlerFunc(s.handleWBComponents)))
+	mux.Handle("POST /api/v1/automation/components/install", s.requireAuth(http.HandlerFunc(s.handleWBInstall)))
+	mux.Handle("POST /api/v1/automation/components/remove", s.requireAuth(http.HandlerFunc(s.handleWBRemove)))
+	mux.Handle("GET /api/v1/automation/components/progress", s.requireAuth(http.HandlerFunc(s.handleWBProgress)))
+	mux.Handle("GET /api/v1/automation/settings", s.requireAuth(http.HandlerFunc(s.handleWBSettingsGet)))
+	mux.Handle("PUT /api/v1/automation/settings", s.requireAuth(http.HandlerFunc(s.handleWBSettingsPut)))
+	mux.Handle("POST /api/v1/automation/{provider}/session", s.requireAuth(http.HandlerFunc(s.handleWBSessionStart)))
+	mux.Handle("GET /api/v1/automation/{provider}/session", s.requireAuth(http.HandlerFunc(s.handleWBSessionGet)))
+	mux.Handle("POST /api/v1/automation/{provider}/session/extend", s.requireAuth(http.HandlerFunc(s.handleWBSessionExtend)))
+	mux.Handle("DELETE /api/v1/automation/{provider}/session", s.requireAuth(http.HandlerFunc(s.handleWBSessionStop)))
+	mux.Handle("POST /api/v1/automation/{provider}/profile/reset", s.requireAuth(http.HandlerFunc(s.handleWBProfileReset)))
+	mux.Handle("POST /api/v1/automation/wbstream/token/refresh", s.requireAuth(http.HandlerFunc(s.handleWBTokenRefresh)))
+
 	mux.Handle("GET /api/v1/updates/check", s.requireAuth(http.HandlerFunc(s.handleUpdatesCheck)))
 	mux.Handle("GET /api/v1/updates/releases", s.requireAuth(http.HandlerFunc(s.handleUpdatesReleases)))
 	mux.Handle("POST /api/v1/updates/install", s.requireAuth(http.HandlerFunc(s.handleUpdatesInstall)))
@@ -83,19 +102,38 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	wb["token_expires_at"] = wbTokenExpires
 	wb["token_expired"] = tokenExpired(wbTokenExpires)
 	cert, _ := certificates.Ensure(s.cfg.TLSDir, s.cfg.PublicIP)
-	writeJSON(w, http.StatusOK, map[string]any{"interface": map[string]any{"theme": theme}, "https": map[string]any{"public_ip": s.cfg.PublicIP, "port": s.cfg.PublicPort, "ca_fingerprint": cert.CAFingerprint, "server_fingerprint": cert.ServerFingerprint, "hsts": s.cfg.HSTS}, "instances": map[string]any{"maximum": s.cfg.MaxInstances}, "yandex": map[string]any{"enabled": yandexEnabled == "true", "base_path": yandexPath, "token_set": tokenErr == nil}, "wb": wb, "updates": map[string]any{"panel_version": s.cfg.PanelVersion, "upstream_sha": s.cfg.UpstreamSHA, "configured": s.cfg.ReleaseManifestURL != ""}})
+	publicCfg := s.configuredPublicSettings(r.Context())
+	restartRequired := publicCfg.PublicOrigin != s.cfg.PublicOrigin || publicCfg.PanelPath != s.cfg.PanelPath || publicCfg.SubscriptionPath != s.cfg.SubscriptionPath
+	writeJSON(w, http.StatusOK, map[string]any{"interface": map[string]any{"theme": theme}, "https": map[string]any{"public_ip": s.cfg.PublicIP, "port": s.cfg.PublicPort, "public_origin": publicCfg.PublicOrigin, "panel_path": publicCfg.PanelPath, "subscription_path": publicCfg.SubscriptionPath, "panel_url": publicCfg.PublicPanelURL(), "subscription_url": publicCfg.PublicSubscriptionBaseURL(), "active_panel_url": s.cfg.PublicPanelURL(), "active_subscription_url": s.cfg.PublicSubscriptionBaseURL(), "restart_required": restartRequired, "ca_fingerprint": cert.CAFingerprint, "server_fingerprint": cert.ServerFingerprint, "hsts": s.cfg.HSTS}, "instances": map[string]any{"maximum": s.cfg.MaxInstances}, "yandex": map[string]any{"enabled": yandexEnabled == "true", "base_path": yandexPath, "token_set": tokenErr == nil}, "wb": wb, "updates": map[string]any{"panel_version": s.cfg.PanelVersion, "upstream_sha": s.cfg.UpstreamSHA, "configured": s.cfg.ReleaseManifestURL != ""}})
+}
+
+func (s *Server) configuredPublicSettings(ctx context.Context) config.Config {
+	cfg := s.cfg
+	for key, target := range map[string]*string{
+		"public_origin":     &cfg.PublicOrigin,
+		"panel_path":        &cfg.PanelPath,
+		"subscription_path": &cfg.SubscriptionPath,
+	} {
+		if value, err := s.store.SettingOrDefault(ctx, key, *target); err == nil {
+			*target = value
+		}
+	}
+	return cfg
 }
 
 func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Theme            string `json:"theme"`
-		MaxInstances     int    `json:"max_instances"`
-		PublicIP         string `json:"public_ip"`
-		PublicPort       int    `json:"public_port"`
-		YandexEnabled    *bool  `json:"yandex_enabled"`
-		YandexOAuthToken string `json:"yandex_oauth_token"`
-		ClearYandexToken bool   `json:"clear_yandex_token"`
-		YandexBasePath   string `json:"yandex_base_path"`
+		Theme            string  `json:"theme"`
+		MaxInstances     int     `json:"max_instances"`
+		PublicIP         string  `json:"public_ip"`
+		PublicPort       int     `json:"public_port"`
+		PublicOrigin     *string `json:"public_origin"`
+		PanelPath        *string `json:"panel_path"`
+		SubscriptionPath *string `json:"subscription_path"`
+		YandexEnabled    *bool   `json:"yandex_enabled"`
+		YandexOAuthToken string  `json:"yandex_oauth_token"`
+		ClearYandexToken bool    `json:"clear_yandex_token"`
+		YandexBasePath   string  `json:"yandex_base_path"`
 	}
 	if err := decodeJSON(w, r, &input); err != nil {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "Проверьте настройки")
@@ -139,7 +177,32 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.SetSetting(r.Context(), "public_port", strconv.Itoa(input.PublicPort), false)
 	}
 	if input.PublicIP != "" || input.PublicPort != 0 {
-		s.subscriptions.SetBaseURL(publicBaseURL(s.cfg))
+		s.subscriptions.SetBaseURL(s.cfg.PublicSubscriptionBaseURL())
+	}
+	if input.PublicOrigin != nil || input.PanelPath != nil || input.SubscriptionPath != nil {
+		candidate := s.configuredPublicSettings(r.Context())
+		if input.PublicOrigin != nil {
+			candidate.PublicOrigin = strings.TrimSpace(*input.PublicOrigin)
+		}
+		if input.PanelPath != nil {
+			candidate.PanelPath = *input.PanelPath
+		}
+		if input.SubscriptionPath != nil {
+			candidate.SubscriptionPath = *input.SubscriptionPath
+		}
+		if err := candidate.Validate(); err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_public_url_settings", err.Error())
+			return
+		}
+		if err := s.store.SetSettings(r.Context(), map[string]string{
+			"public_origin":     candidate.PublicOrigin,
+			"panel_path":        candidate.PanelPath,
+			"subscription_path": candidate.SubscriptionPath,
+		}); err != nil {
+			s.logger.Error("save public URL settings", "error", err)
+			writeError(w, r, http.StatusInternalServerError, "settings_save_failed", "Не удалось атомарно сохранить публичные URL")
+			return
+		}
 	}
 	if input.YandexEnabled != nil {
 		_ = s.store.SetSetting(r.Context(), "yandex_enabled", strconv.FormatBool(*input.YandexEnabled), false)
@@ -242,29 +305,32 @@ func (s *Server) handleWBSettingsPut(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 	wbSessionStateMu.Lock()
 	defer wbSessionStateMu.Unlock()
-	if runtime.GOOS != "linux" || !wbStatus()["installed"].(bool) {
-		writeError(w, r, http.StatusUnprocessableEntity, "wb_not_installed", "WB components установлены не полностью. Переустановите их в настройках")
-		return
-	}
 	expires := time.Now().Add(15 * time.Minute)
 	input := struct {
 		Action   string `json:"action"`
 		Provider string `json:"provider"`
-	}{Action: "create", Provider: "wbstream"}
+	}{Action: "create", Provider: automationWBProvider}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "Укажите action create или refresh")
 		return
+	}
+	if provider := r.PathValue("provider"); provider != "" {
+		input.Provider = provider
 	}
 	if input.Action != "create" && input.Action != "refresh" {
 		writeError(w, r, http.StatusBadRequest, "invalid_action", "Action должен быть create или refresh")
 		return
 	}
-	if input.Provider != "wbstream" && input.Provider != "telemost" {
+	if !validAutomationProvider(input.Provider) {
 		writeError(w, r, http.StatusBadRequest, "invalid_provider", "Provider автоматизации должен быть wbstream или telemost")
 		return
 	}
-	if input.Provider == "telemost" && input.Action != "create" {
+	if input.Provider == automationTeleProvider && input.Action != "create" {
 		writeError(w, r, http.StatusBadRequest, "invalid_action", "Telemost поддерживает только создание комнаты")
+		return
+	}
+	if runtime.GOOS != "linux" || !wbStatus()["installed"].(bool) {
+		writeError(w, r, http.StatusUnprocessableEntity, "wb_not_installed", "Компоненты автоматизации установлены не полностью. Переустановите их в настройках")
 		return
 	}
 	if current, _ := s.store.SettingOrDefault(r.Context(), "wb_session_expires", ""); current != "" {
@@ -286,8 +352,8 @@ func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusUnprocessableEntity, "wb_not_installed", "WB components установлены не полностью. Переустановите их в настройках")
 		return
 	}
-	if err := prepareWBProfile(); err != nil {
-		s.logger.Error("prepare WB profile", "error", err)
+	if err := prepareAutomationProfile(input.Provider); err != nil {
+		s.logger.Error("prepare automation profile", "provider", input.Provider, "error", err)
 		writeError(w, r, http.StatusInternalServerError, "wb_profile_failed", "Не удалось подготовить постоянный Chromium profile")
 		return
 	}
@@ -318,14 +384,25 @@ func (s *Server) handleWBSessionStart(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.store.SetSetting(r.Context(), "wb_session_expires", expires.Format(time.RFC3339), false)
 	_ = s.store.SetSetting(r.Context(), "wb_session_extended", "false", false)
+	_ = s.store.SetSetting(r.Context(), automationSessionKey, input.Provider, false)
 	s.startWBSessionMonitor()
 	audit(s, r, "wb.session_start", "wb", "session", "success", "provider="+input.Provider+" action="+input.Action)
-	writeJSON(w, http.StatusCreated, map[string]any{"active": true, "action": input.Action, "provider": input.Provider, "expires_at": expires, "novnc_url": wbNoVNCURL})
+	writeJSON(w, http.StatusCreated, map[string]any{"active": true, "action": input.Action, "provider": input.Provider, "expires_at": expires, "novnc_url": automationNoVNCURL(s.cfg.PanelPath)})
 }
 
 func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
 	expires, _ := s.store.SettingOrDefault(r.Context(), "wb_session_expires", "")
 	extended, _ := s.store.SettingOrDefault(r.Context(), "wb_session_extended", "false")
+	provider := s.currentAutomationProvider(r.Context())
+	requestedProvider := automationProviderFromRequest(r, provider)
+	if !validAutomationProvider(requestedProvider) {
+		writeError(w, r, http.StatusBadRequest, "invalid_provider", "Provider автоматизации должен быть wbstream или telemost")
+		return
+	}
+	if r.PathValue("provider") != "" && requestedProvider != provider {
+		writeJSON(w, http.StatusOK, map[string]any{"active": false, "provider": requestedProvider, "expires_at": "", "extended": false, "novnc_url": automationNoVNCURL(s.cfg.PanelPath), "state": map[string]any{}})
+		return
+	}
 	active := false
 	if t, err := time.Parse(time.RFC3339, expires); err == nil {
 		active = time.Now().Before(t)
@@ -352,7 +429,16 @@ func (s *Server) handleWBSessionGet(w http.ResponseWriter, r *http.Request) {
 		active = true
 	}
 	s.attachWBCreateToken(r.Context(), statePayload)
-	writeJSON(w, http.StatusOK, map[string]any{"active": active, "expires_at": expires, "extended": extended == "true", "novnc_url": wbNoVNCURL, "state": statePayload})
+	writeJSON(w, http.StatusOK, map[string]any{"active": active, "provider": requestedProvider, "expires_at": expires, "extended": extended == "true", "novnc_url": automationNoVNCURL(s.cfg.PanelPath), "state": statePayload})
+}
+
+func automationNoVNCURL(panelPath string) string {
+	query := url.Values{
+		"autoconnect": {"true"},
+		"resize":      {"scale"},
+		"path":        {strings.TrimPrefix(config.JoinURLPath(panelPath, "/wb/novnc/websockify"), "/")},
+	}
+	return config.JoinURLPath(panelPath, "/wb/novnc/vnc.html") + "?" + query.Encode()
 }
 
 func (s *Server) attachWBCreateToken(ctx context.Context, state map[string]any) {
@@ -381,6 +467,11 @@ func shouldExposeWBCreateToken(state map[string]any) bool {
 }
 
 func (s *Server) handleWBSessionExtend(w http.ResponseWriter, r *http.Request) {
+	provider := automationProviderFromRequest(r, s.currentAutomationProvider(r.Context()))
+	if !validAutomationProvider(provider) || provider != s.currentAutomationProvider(r.Context()) {
+		writeError(w, r, http.StatusConflict, "wb_session_inactive", "Сессия выбранного provider не активна")
+		return
+	}
 	extended, _ := s.store.SettingOrDefault(r.Context(), "wb_session_extended", "false")
 	if extended == "true" {
 		writeError(w, r, http.StatusConflict, "wb_already_extended", "Сессию можно продлить только один раз")
@@ -403,9 +494,16 @@ func (s *Server) handleWBSessionExtend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWBSessionStop(w http.ResponseWriter, r *http.Request) {
+	currentProvider := s.currentAutomationProvider(r.Context())
+	provider := automationProviderFromRequest(r, currentProvider)
+	if !validAutomationProvider(provider) || provider != currentProvider {
+		writeError(w, r, http.StatusBadRequest, "invalid_provider", "Provider автоматизации должен быть wbstream или telemost")
+		return
+	}
 	stopWBSessionMonitor()
 	_ = s.store.DeleteSetting(r.Context(), "wb_session_expires")
 	_ = s.store.DeleteSetting(r.Context(), "wb_session_extended")
+	_ = s.store.DeleteSetting(r.Context(), automationSessionKey)
 	if runtime.GOOS == "linux" {
 		_ = exec.CommandContext(r.Context(), "systemctl", "stop", wbSessionService).Run()
 	}
@@ -416,27 +514,33 @@ func (s *Server) handleWBSessionStop(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleWBProfileReset stops any active WB browser session and removes the
-// persistent Chromium profile directory so the next Playwright session starts
-// from a clean state and requires a fresh WB login.
+// handleWBProfileReset clears only the selected provider profile.
 func (s *Server) handleWBProfileReset(w http.ResponseWriter, r *http.Request) {
-	stopWBSessionMonitor()
-	if runtime.GOOS == "linux" {
-		_ = exec.CommandContext(r.Context(), "systemctl", "stop", wbSessionService).Run()
-		_ = exec.CommandContext(r.Context(), "systemctl", "reset-failed", wbSessionService).Run()
+	provider := automationProviderFromRequest(r, automationWBProvider)
+	if !validAutomationProvider(provider) {
+		writeError(w, r, http.StatusBadRequest, "invalid_provider", "Provider автоматизации должен быть wbstream или telemost")
+		return
 	}
-	wbSessionStateMu.Lock()
-	cleanupWBWorkerFiles()
-	wbSessionStateMu.Unlock()
-	_ = s.store.DeleteSetting(r.Context(), "wb_session_expires")
-	_ = s.store.DeleteSetting(r.Context(), "wb_session_extended")
+	if s.currentAutomationProvider(r.Context()) == provider {
+		stopWBSessionMonitor()
+		if runtime.GOOS == "linux" {
+			_ = exec.CommandContext(r.Context(), "systemctl", "stop", wbSessionService).Run()
+			_ = exec.CommandContext(r.Context(), "systemctl", "reset-failed", wbSessionService).Run()
+		}
+		wbSessionStateMu.Lock()
+		cleanupWBWorkerFiles()
+		wbSessionStateMu.Unlock()
+		_ = s.store.DeleteSetting(r.Context(), "wb_session_expires")
+		_ = s.store.DeleteSetting(r.Context(), "wb_session_extended")
+		_ = s.store.DeleteSetting(r.Context(), automationSessionKey)
+	}
 	if runtime.GOOS == "linux" {
-		if err := os.RemoveAll(wbProfileDir); err != nil {
+		if err := removeAutomationProfile(automationProfilesDir, provider); err != nil {
 			writeError(w, r, http.StatusInternalServerError, "wb_profile_reset_failed", "Не удалось очистить Chromium profile: "+err.Error())
 			return
 		}
 	}
-	audit(s, r, "wb.profile_reset", "wb", "profile", "success", "chromium profile cleared")
+	audit(s, r, "automation.profile_reset", "automation", provider, "success", "chromium profile cleared")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -696,7 +800,7 @@ func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action, prov
 			}
 		}
 	}
-	job := map[string]any{"action": action, "provider": provider, "home_url": homeURL, "existing_room_id": existingRoomID, "profile_dir": wbProfileDir, "state_file": wbStatePath, "control_file": wbControlPath, "deadline_unix": expires.Unix(), "proxy": proxy}
+	job := map[string]any{"action": action, "provider": provider, "home_url": homeURL, "existing_room_id": existingRoomID, "profile_dir": automationProfileDir(provider), "state_file": wbStatePath, "control_file": wbControlPath, "deadline_unix": expires.Unix(), "proxy": proxy}
 	if err := writeWBWorkerJSON(wbJobPath, job); err != nil {
 		return err
 	}
@@ -721,12 +825,74 @@ func refreshWBAutomationRuntimeAssets(ctx context.Context) error {
 	return nil
 }
 
-func prepareWBProfile() error {
-	command := exec.Command("install", "-d", "-m", "0700", "-o", "olcrtc-wb", "-g", "olcrtc-wb", wbProfileDir)
+func prepareAutomationProfile(provider string) error {
+	if !validAutomationProvider(provider) {
+		return fmt.Errorf("invalid automation provider %q", provider)
+	}
+	if err := migrateLegacyWBProfile(); err != nil {
+		return err
+	}
+	command := exec.Command("install", "-d", "-m", "0700", "-o", "olcrtc-wb", "-g", "olcrtc-wb", automationProfilesDir, automationProfileDir(provider))
 	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("prepare WB profile: %w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("prepare automation profile: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func validAutomationProvider(provider string) bool {
+	return provider == automationWBProvider || provider == automationTeleProvider
+}
+
+func automationProviderFromRequest(r *http.Request, fallback string) string {
+	if provider := r.PathValue("provider"); provider != "" {
+		return provider
+	}
+	return fallback
+}
+
+func automationProfileDir(provider string) string {
+	return filepath.Join(automationProfilesDir, provider)
+}
+
+func removeAutomationProfile(root, provider string) error {
+	if !validAutomationProvider(provider) {
+		return fmt.Errorf("invalid automation provider %q", provider)
+	}
+	return os.RemoveAll(filepath.Join(root, provider))
+}
+
+func migrateLegacyWBProfile() error {
+	target := automationProfileDir(automationWBProvider)
+	if info, err := os.Stat(target); err == nil && info.IsDir() {
+		return nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect WB profile: %w", err)
+	}
+	legacy, err := os.Stat(legacyWBProfileDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect legacy WB profile: %w", err)
+	}
+	if !legacy.IsDir() {
+		return fmt.Errorf("legacy WB profile is not a directory")
+	}
+	if err := os.MkdirAll(automationProfilesDir, 0o700); err != nil {
+		return fmt.Errorf("create automation profiles directory: %w", err)
+	}
+	if err := os.Rename(legacyWBProfileDir, target); err != nil {
+		return fmt.Errorf("migrate legacy WB profile: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) currentAutomationProvider(ctx context.Context) string {
+	provider, _ := s.store.SettingOrDefault(ctx, automationSessionKey, automationWBProvider)
+	if !validAutomationProvider(provider) {
+		return automationWBProvider
+	}
+	return provider
 }
 
 func ensureWBRuntimeDir() error {

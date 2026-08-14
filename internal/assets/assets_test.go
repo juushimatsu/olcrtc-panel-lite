@@ -1,6 +1,7 @@
 package assets
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -120,6 +121,39 @@ func TestInstanceUnitSelfHealsPermissionsAndOperationsExposeState(t *testing.T) 
 	}
 }
 
+func TestUpdaterUsesEffectivePanelHealthURLAcrossSwitches(t *testing.T) {
+	updater, err := fs.ReadFile(files, "files/update/update.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(updater)
+	for _, required := range []string{
+		`"$binary" health-url --config "$CONFIG"`,
+		`*'unknown command "health-url"'*)`,
+		`health_url=$(panel_health_url "$target/olcrtc-panel")`,
+		`rollback_health_url=$(panel_health_url "$current/olcrtc-panel")`,
+		`health_url=$(panel_health_url "$previous/olcrtc-panel")`,
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("updater is missing %q", required)
+		}
+	}
+	healthURL := strings.Index(source, `health_url=$(panel_health_url "$target/olcrtc-panel")`)
+	switchBundle := strings.Index(source, `ln -sfn "$target" "$RELEASES/current"`)
+	if healthURL < 0 || switchBundle < 0 || healthURL > switchBundle {
+		t.Fatal("updater does not resolve the target health URL before switching bundles")
+	}
+	if count := strings.Count(source, `/usr/local/bin/olcrtc-panel assets install --root /`); count != 3 {
+		t.Fatalf("updater installs active bundle assets %d times, want install and both rollback paths", count)
+	}
+	if count := strings.Count(source, `systemctl daemon-reload`); count != 3 {
+		t.Fatalf("updater reloads systemd %d times, want install and both rollback paths", count)
+	}
+	if !strings.Contains(source, `wait_for_panel "$rollback_health_url"`) || strings.Count(source, `wait_for_panel "$health_url"`) != 2 {
+		t.Fatal("updater does not use the matching effective health URL for install and both rollback paths")
+	}
+}
+
 func TestLiveKitAndWBUnitsHaveRequiredRuntimeAccess(t *testing.T) {
 	instanceUnit, err := fs.ReadFile(files, "files/systemd/olcrtc-instance@.service")
 	if err != nil {
@@ -194,6 +228,66 @@ func TestRefreshWBAutomationUpdatesInstalledWorkerAndRuntimeFiles(t *testing.T) 
 	} {
 		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
 			t.Fatalf("refreshed WB asset %s: %v", name, err)
+		}
+	}
+}
+
+func TestLegacyWBProfileMigrationIsOneTimeAndNonDestructive(t *testing.T) {
+	root := t.TempDir()
+	stateRoot := filepath.Join(root, "var", "lib", "olcrtc-wb")
+	legacy := filepath.Join(stateRoot, "profile")
+	target := filepath.Join(stateRoot, "profiles", "wbstream")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "legacy-cookie"), []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateLegacyWBProfile(root); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(target, "legacy-cookie")); err != nil || string(data) != "legacy" {
+		t.Fatalf("legacy profile was not migrated: data=%q err=%v", data, err)
+	}
+
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "second-cookie"), []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateLegacyWBProfile(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "second-cookie")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("existing WB profile was overwritten: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(legacy, "second-cookie")); err != nil {
+		t.Fatalf("second legacy profile should remain untouched: %v", err)
+	}
+}
+
+func TestRefreshWBAutomationPreservesProviderProfiles(t *testing.T) {
+	root := t.TempDir()
+	profiles := filepath.Join(root, "var", "lib", "olcrtc-wb", "profiles")
+	markers := []string{
+		filepath.Join(profiles, "wbstream", "cookie.sqlite"),
+		filepath.Join(profiles, "telemost", "cookie.sqlite"),
+	}
+	for _, marker := range markers {
+		if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(marker, []byte(marker), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RefreshWBAutomation(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range markers {
+		if data, err := os.ReadFile(marker); err != nil || string(data) != marker {
+			t.Fatalf("profile marker changed: %s data=%q err=%v", marker, data, err)
 		}
 	}
 }

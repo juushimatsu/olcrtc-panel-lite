@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,9 +33,16 @@ type testPanel struct {
 }
 
 func newTestPanel(t *testing.T) testPanel {
+	return newTestPanelWithConfig(t, nil)
+}
+
+func newTestPanelWithConfig(t *testing.T, configure func(*config.Config)) testPanel {
 	t.Helper()
 	root := t.TempDir()
 	cfg := config.Dev(root)
+	if configure != nil {
+		configure(&cfg)
+	}
 	st, err := store.Open(filepath.Join(root, "panel.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +57,7 @@ func newTestPanel(t *testing.T) testPanel {
 	}
 	secrets, _ := security.NewSecrets(make([]byte, 32))
 	instances := instance.NewManager(st, secrets, systemd.New(false), cfg.InstancesDir, cfg.RuntimeDir, 20)
-	subscriptions := subscription.NewService(st, instances, secrets, "https://panel.test:8443")
+	subscriptions := subscription.NewServiceAtSubscriptionPath(st, instances, secrets, cfg.PublicSubscriptionBaseURL())
 	handler := New(cfg, st, instances, subscriptions, secrets, slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)))
 	ts := httptest.NewTLSServer(handler)
 	t.Cleanup(ts.Close)
@@ -56,6 +65,25 @@ func newTestPanel(t *testing.T) testPanel {
 	jar, _ := cookiejar.New(nil)
 	client.Jar = jar
 	return testPanel{server: ts, client: client, store: st}
+}
+
+func loginTestPanelAt(t *testing.T, p testPanel, panelPath string) string {
+	t.Helper()
+	resp := p.request(t, http.MethodPost, config.JoinURLPath(panelPath, "/api/v1/auth/login"), map[string]string{"username": "admin_test", "password": "test-password-12345"}, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status=%d", resp.StatusCode)
+	}
+	var payload struct {
+		CSRF string `json:"csrf_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.CSRF == "" {
+		t.Fatal("empty CSRF")
+	}
+	return payload.CSRF
 }
 
 func (p testPanel) request(t *testing.T, method, path string, body any, csrf string) *http.Response {
@@ -121,6 +149,129 @@ func TestAuthAndCSRF(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create status=%d", resp.StatusCode)
+	}
+}
+
+func TestCustomPanelAndSubscriptionMounts(t *testing.T) {
+	const panelPath = "/control-a8f3"
+	const subscriptionPath = "/feeds-b19c"
+	p := newTestPanelWithConfig(t, func(cfg *config.Config) {
+		cfg.PublicOrigin = "https://panel.example"
+		cfg.PanelPath = panelPath
+		cfg.SubscriptionPath = subscriptionPath
+	})
+
+	noRedirect := *p.client
+	noRedirect.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	req, err := http.NewRequest(http.MethodGet, p.server.URL+panelPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusPermanentRedirect || resp.Header.Get("Location") != panelPath+"/" {
+		t.Fatalf("canonical redirect status=%d location=%q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	for path, want := range map[string]int{
+		"/":                                 http.StatusNotFound,
+		"/api/v1/system/status":             http.StatusNotFound,
+		panelPath + "/api/v1/system/status": http.StatusUnauthorized,
+	} {
+		resp = p.request(t, http.MethodGet, path, nil, "")
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("GET %s status=%d want=%d", path, resp.StatusCode, want)
+		}
+	}
+
+	csrf := loginTestPanelAt(t, p, panelPath)
+	resp = p.request(t, http.MethodPost, panelPath+"/api/v1/subscriptions", map[string]any{"name": "custom", "slug": "abcdefghijklmnop", "refresh": "10m", "enabled": true}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create subscription status=%d", resp.StatusCode)
+	}
+	resp = p.request(t, http.MethodGet, subscriptionPath+"/abcdefghijklmnop", nil, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("custom subscription status=%d", resp.StatusCode)
+	}
+	resp = p.request(t, http.MethodGet, "/sub/abcdefghijklmnop", nil, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("legacy subscription route status=%d", resp.StatusCode)
+	}
+}
+
+func TestCustomPanelCookiesAndTrustedProxy(t *testing.T) {
+	const panelPath = "/private-panel"
+	p := newTestPanelWithConfig(t, func(cfg *config.Config) { cfg.PanelPath = panelPath })
+	resp := p.request(t, http.MethodPost, panelPath+"/api/v1/auth/login", map[string]string{"username": "admin_test", "password": "test-password-12345"}, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status=%d", resp.StatusCode)
+	}
+	paths := map[string]int{}
+	for _, cookie := range resp.Cookies() {
+		paths[cookie.Path]++
+	}
+	if paths[panelPath] != 2 || paths["/"] != 2 {
+		t.Fatalf("unexpected cookie paths: %#v", paths)
+	}
+
+	server := &Server{trustedProxies: parseTrustedProxies([]string{"127.0.0.1/32", "10.0.0.0/8"})}
+	untrusted := httptest.NewRequest(http.MethodGet, "https://panel.example/", nil)
+	untrusted.RemoteAddr = "203.0.113.10:1234"
+	untrusted.Header.Set("X-Forwarded-For", "198.51.100.20")
+	if got := server.resolveClientIP(untrusted); got != "203.0.113.10" {
+		t.Fatalf("untrusted XFF resolved to %q", got)
+	}
+	trusted := httptest.NewRequest(http.MethodGet, "https://panel.example/", nil)
+	trusted.RemoteAddr = "127.0.0.1:1234"
+	trusted.Header.Set("X-Forwarded-For", "198.51.100.20, 10.0.0.2")
+	if got := server.resolveClientIP(trusted); got != "198.51.100.20" {
+		t.Fatalf("trusted XFF resolved to %q", got)
+	}
+}
+
+func TestPublicURLSettingsAreValidatedAndSavedTogether(t *testing.T) {
+	p := newTestPanel(t)
+	csrf := loginTestPanel(t, p)
+	if err := p.store.SetSettings(context.Background(), map[string]string{"public_origin": "https://old.example", "panel_path": "/old-panel", "subscription_path": "/old-feeds"}); err != nil {
+		t.Fatal(err)
+	}
+	resp := p.request(t, http.MethodPut, "/api/v1/settings", map[string]any{"public_origin": "https://new.example", "panel_path": "/same", "subscription_path": "/same/feeds"}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid settings status=%d", resp.StatusCode)
+	}
+	for key, want := range map[string]string{"public_origin": "https://old.example", "panel_path": "/old-panel", "subscription_path": "/old-feeds"} {
+		got, _, err := p.store.Setting(context.Background(), key)
+		if err != nil || got != want {
+			t.Fatalf("setting %s=%q, %v want=%q", key, got, err, want)
+		}
+	}
+
+	resp = p.request(t, http.MethodPut, "/api/v1/settings", map[string]any{"public_origin": "https://new.example", "panel_path": "/new-panel", "subscription_path": "/new-feeds"}, csrf)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("valid settings status=%d", resp.StatusCode)
+	}
+	var payload struct {
+		HTTPS struct {
+			PanelURL        string `json:"panel_url"`
+			SubscriptionURL string `json:"subscription_url"`
+			RestartRequired bool   `json:"restart_required"`
+		} `json:"https"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.HTTPS.PanelURL != "https://new.example/new-panel" || payload.HTTPS.SubscriptionURL != "https://new.example/new-feeds" || !payload.HTTPS.RestartRequired {
+		t.Fatalf("unexpected public settings response: %#v", payload.HTTPS)
 	}
 }
 
@@ -400,6 +551,64 @@ func TestWriteQRKeepsLongPayloadWhole(t *testing.T) {
 	writeQR(recorder, request, payload, "long.png")
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "image/png" || recorder.Body.Len() == 0 {
 		t.Fatalf("long QR failed: status=%d type=%q body=%d", recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.Len())
+	}
+}
+
+func TestAutomationCanonicalAndLegacyRoutes(t *testing.T) {
+	p := newTestPanel(t)
+	csrf := loginTestPanel(t, p)
+
+	for _, path := range []string{"/api/v1/wb/components", "/api/v1/automation/components"} {
+		resp := p.request(t, http.MethodGet, path, nil, "")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status=%d", path, resp.StatusCode)
+		}
+	}
+
+	resp := p.request(t, http.MethodPost, "/api/v1/automation/telemost/session", map[string]string{"action": "refresh"}, csrf)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("Telemost refresh status=%d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != "invalid_action" {
+		t.Fatalf("Telemost refresh code=%q", payload.Error.Code)
+	}
+}
+
+func TestAutomationProviderProfilesAreIsolated(t *testing.T) {
+	if wb, telemost := automationProfileDir(automationWBProvider), automationProfileDir(automationTeleProvider); wb == telemost {
+		t.Fatalf("provider profiles share path %q", wb)
+	}
+
+	root := t.TempDir()
+	wbProfile := filepath.Join(root, automationWBProvider)
+	telemostProfile := filepath.Join(root, automationTeleProvider)
+	for _, path := range []string{wbProfile, telemostProfile} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(wbProfile, "cookie.sqlite")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := removeAutomationProfile(root, automationTeleProvider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("reset Telemost removed WB profile: %v", err)
+	}
+	if _, err := os.Stat(telemostProfile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Telemost profile still exists: %v", err)
 	}
 }
 

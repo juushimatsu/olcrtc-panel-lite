@@ -17,7 +17,8 @@
 - login ограничен пятью неуспешными попытками за десять минут и exponential delay;
 - request body ограничен 1 MiB, log query - 2000 строками;
 - CSP, `nosniff`, `no-referrer`, frame protection и TLS 1.2+ включены;
-- публичны только `/sub/<slug>`, `/sub/<slug>/olcbox`, `/sub/<slug>/open` и `/ca.crt`;
+- публичны только routes подписок под настроенным `subscription_path`; admin API, `ca.crt` и noVNC находятся под `panel_path`;
+- `X-Forwarded-For` принимается только от peer, входящего в `trusted_proxies`, и разбирается справа налево до первого недоверенного адреса;
 - subscription slug имеет минимум 128 бит случайной энтропии и является bearer secret;
 - WB QR/URI OLCRTC Client содержит полный auth token и должен передаваться как credential; UI маскирует token до явного показа;
 - subscription QR может содержать `mirror_key`; UI маскирует его до явного показа;
@@ -25,7 +26,7 @@
 
 ## Private CA
 
-Installer создаёт локальный CA и leaf certificate с SAN для public IP, `127.0.0.1` и `localhost`. CA сохраняется при регенерации leaf. HSTS по умолчанию выключен.
+Installer создаёт локальный CA и leaf certificate с SAN для public IP, `127.0.0.1` и `localhost`. CA сохраняется при регенерации leaf. HSTS по умолчанию выключен. При домене публичный сертификат обычно завершает reverse proxy, а private CA защищает loopback-соединение до панели.
 
 Скачанный через ещё не доверенное соединение `ca.crt` нельзя считать автоматически подлинным. Сверьте SHA-256 fingerprint с выводом installer в консоли VPS, затем установите CA в trust store нужного клиента.
 

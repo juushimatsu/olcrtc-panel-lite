@@ -31,6 +31,12 @@ type Service struct {
 
 // NewService creates a renderer.
 func NewService(st *store.Store, instances *instance.Manager, secrets *security.Secrets, baseURL string) *Service {
+	return NewServiceAtSubscriptionPath(st, instances, secrets, strings.TrimRight(baseURL, "/")+"/sub")
+}
+
+// NewServiceAtSubscriptionPath creates a renderer with an explicit public
+// subscription base URL. It is used when the installation customizes /sub.
+func NewServiceAtSubscriptionPath(st *store.Store, instances *instance.Manager, secrets *security.Secrets, baseURL string) *Service {
 	return &Service{store: st, instances: instances, secrets: secrets, baseURL: strings.TrimRight(baseURL, "/")}
 }
 
@@ -207,7 +213,7 @@ func (s *Service) Bundle(ctx context.Context, slug string) ([]byte, error) {
 	s.mu.RLock()
 	baseURL := s.baseURL
 	s.mu.RUnlock()
-	bundle := clientBundle{Type: "olcrtc-sub", Version: 2, Name: sub.Name, Slug: sub.Slug, URL: baseURL + "/sub/" + sub.Slug, Mirrors: mirrors, MirrorKey: key, UpdateWhenConnectedOnly: false, Deduplication: true}
+	bundle := clientBundle{Type: "olcrtc-sub", Version: 2, Name: sub.Name, Slug: sub.Slug, URL: baseURL + "/" + sub.Slug, Mirrors: mirrors, MirrorKey: key, UpdateWhenConnectedOnly: false, Deduplication: true}
 	return json.Marshal(bundle)
 }
 

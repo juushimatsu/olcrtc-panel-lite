@@ -374,14 +374,27 @@ func (m *Manager) decorate(ctx context.Context, item model.Instance) (model.Inst
 	item.AuthToken = ""
 	item.OutboundProxy = ""
 	status, err := m.systemd.Status(ctx, item.ID)
-	if err != nil {
-		item.Status = "unknown"
-		return item, err
-	}
 	item.Status = status.State
+	if item.Status == "" {
+		item.Status = "unknown"
+	}
 	item.UptimeSeconds = status.UptimeSeconds
+	item.ProcessUptimeSeconds = status.ProcessUptimeSeconds
+	item.UptimeSource = status.UptimeSource
+	item.ProcessUptimeSource = status.ProcessUptimeSource
+	item.StartedAt = status.StartedAt
+	if !status.ObservedAt.IsZero() {
+		observedAt := status.ObservedAt
+		item.ObservedAt = &observedAt
+	}
+	item.MainPID = status.MainPID
+	item.RestartCount = status.RestartCount
+	item.InvocationID = status.InvocationID
 	item.NetworkIngressBytes = status.IngressBytes
 	item.NetworkEgressBytes = status.EgressBytes
+	if err != nil {
+		return item, err
+	}
 	return item, nil
 }
 

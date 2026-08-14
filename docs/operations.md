@@ -12,6 +12,8 @@
 /var/lib/olcrtc-panel/tls/
 /var/lib/olcrtc-panel/releases/
 /var/lib/olcrtc/<id>/data/
+/var/lib/olcrtc-wb/profiles/wbstream/
+/var/lib/olcrtc-wb/profiles/telemost/
 ```
 
 ## Credentials
@@ -42,6 +44,8 @@ sudo systemctl --no-pager --full status olcrtc-panel.service
 ```
 
 Новый адрес будет иметь вид `https://IP_СЕРВЕРА:9443`. Порт не входит в TLS-сертификат, поэтому перевыпускать сертификат не требуется. После проверки нового адреса старое правило можно удалить: `sudo ufw delete allow 8443/tcp`.
+
+Для домена, loopback listener и раздельных путей панели/подписок используйте [Nginx/Caddy examples](reverse-proxy.md). Изменения `public_origin`, `panel_path` и `subscription_path` вступают в силу после перезапуска панели.
 
 ## Диагностика
 

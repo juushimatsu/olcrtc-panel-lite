@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -36,30 +37,42 @@ type contextKey string
 const (
 	requestIDKey contextKey = "request-id"
 	sessionKey   contextKey = "session"
+	clientIPKey  contextKey = "client-ip"
 )
 
 // Server owns API dependencies but never executes arbitrary user commands.
 type Server struct {
-	cfg           config.Config
-	store         *store.Store
-	instances     *instance.Manager
-	subscriptions *subscription.Service
-	secrets       *security.Secrets
-	backups       *backup.Manager
-	startedAt     time.Time
-	limiter       *loginLimiter
-	publicLimiter *windowLimiter
-	networkSpeed  *speedSampler
-	operations    *operationTracker
-	logger        *slog.Logger
+	cfg            config.Config
+	store          *store.Store
+	instances      *instance.Manager
+	subscriptions  *subscription.Service
+	secrets        *security.Secrets
+	backups        *backup.Manager
+	startedAt      time.Time
+	limiter        *loginLimiter
+	publicLimiter  *windowLimiter
+	networkSpeed   *speedSampler
+	operations     *operationTracker
+	logger         *slog.Logger
+	trustedProxies []*net.IPNet
 }
 
 // New creates the complete API and SPA handler.
 func New(cfg config.Config, st *store.Store, instances *instance.Manager, subscriptions *subscription.Service, secrets *security.Secrets, logger *slog.Logger) http.Handler {
-	server := &Server{cfg: cfg, store: st, instances: instances, subscriptions: subscriptions, secrets: secrets, backups: backup.NewManager(st.DB(), cfg.InstancesDir, cfg.BackupDir), startedAt: time.Now(), limiter: newLoginLimiter(), publicLimiter: newWindowLimiter(120, time.Minute), networkSpeed: &speedSampler{}, operations: newOperationTracker(), logger: logger}
-	mux := http.NewServeMux()
-	server.routes(mux)
-	return server.securityHeaders(server.requestContext(mux))
+	server := &Server{cfg: cfg, store: st, instances: instances, subscriptions: subscriptions, secrets: secrets, backups: backup.NewManager(st.DB(), cfg.InstancesDir, cfg.BackupDir), startedAt: time.Now(), limiter: newLoginLimiter(), publicLimiter: newWindowLimiter(120, time.Minute), networkSpeed: &speedSampler{}, operations: newOperationTracker(), logger: logger, trustedProxies: parseTrustedProxies(cfg.TrustedProxies)}
+	adminMux := http.NewServeMux()
+	server.routes(adminMux)
+	outerMux := http.NewServeMux()
+	server.publicRoutes(outerMux)
+	if cfg.PanelPath == "/" {
+		outerMux.Handle("/", adminMux)
+	} else {
+		outerMux.HandleFunc("GET "+cfg.PanelPath, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, cfg.PanelPath+"/", http.StatusPermanentRedirect)
+		})
+		outerMux.Handle(cfg.PanelPath+"/", http.StripPrefix(cfg.PanelPath, adminMux))
+	}
+	return server.securityHeaders(server.requestContext(outerMux))
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -82,10 +95,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.routesSubscriptions(mux)
 	s.routesSettings(mux)
 
-	mux.HandleFunc("GET /sub/{slug}", s.handlePublicStandardSubscription)
-	mux.HandleFunc("GET /sub/{slug}/olcbox", s.handlePublicOLCBOXSubscription)
-	mux.HandleFunc("GET /sub/{slug}/open", s.handlePublicSubscriptionOpen)
-	mux.HandleFunc("/sub/{slug}/{rest...}", http.NotFound)
 	mux.HandleFunc("GET /ca.crt", s.handleCA)
 	proxyTarget, _ := url.Parse("http://127.0.0.1:6080")
 	novnc := httputil.NewSingleHostReverseProxy(proxyTarget)
@@ -99,6 +108,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.Handle("/", s.frontend())
 }
 
+func (s *Server) publicRoutes(mux *http.ServeMux) {
+	base := s.cfg.SubscriptionPath
+	mux.HandleFunc("GET "+base+"/{slug}", s.handlePublicStandardSubscription)
+	mux.HandleFunc("GET "+base+"/{slug}/olcbox", s.handlePublicOLCBOXSubscription)
+	mux.HandleFunc("GET "+base+"/{slug}/open", s.handlePublicSubscriptionOpen)
+	mux.HandleFunc(base+"/{slug}/{rest...}", http.NotFound)
+}
+
 func (s *Server) requestContext(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		idBytes := make([]byte, 8)
@@ -106,6 +123,7 @@ func (s *Server) requestContext(next http.Handler) http.Handler {
 		id := hex.EncodeToString(idBytes)
 		w.Header().Set("X-Request-ID", id)
 		ctx := context.WithValue(r.Context(), requestIDKey, id)
+		ctx = context.WithValue(ctx, clientIPKey, s.resolveClientIP(r))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -120,7 +138,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		frameAncestors := "'none'"
 		scriptSource := "'self'"
 		connectSource := "'self'"
-		if strings.HasPrefix(r.URL.Path, "/wb/novnc/") {
+		if strings.HasPrefix(r.URL.Path, config.JoinURLPath(s.cfg.PanelPath, "/wb/novnc/")) {
 			frameAncestors = "'self'"
 			scriptSource = "'self' 'unsafe-eval'"
 			connectSource = "'self' ws: wss:"
@@ -191,9 +209,11 @@ func (s *Server) frontend() http.Handler {
 				http.Error(w, "frontend unavailable", http.StatusInternalServerError)
 				return
 			}
+			page := strings.ReplaceAll(string(b), "__OLCRTC_PANEL_BASE__", html.EscapeString(s.cfg.PanelPath))
+			page = strings.ReplaceAll(page, "__OLCRTC_SUBSCRIPTION_BASE__", html.EscapeString(s.cfg.PublicSubscriptionBaseURL()))
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
-			_, _ = w.Write(b)
+			_, _ = io.WriteString(w, page)
 			return
 		}
 		w.Header().Set("Cache-Control", "public, max-age=3600")
@@ -231,11 +251,69 @@ func requestID(r *http.Request) string {
 }
 
 func remoteIP(r *http.Request) string {
+	if value, ok := r.Context().Value(clientIPKey).(string); ok && value != "" {
+		return value
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+func parseTrustedProxies(values []string) []*net.IPNet {
+	result := make([]*net.IPNet, 0, len(values))
+	for _, value := range values {
+		_, network, err := net.ParseCIDR(value)
+		if err == nil {
+			result = append(result, network)
+		}
+	}
+	return result
+}
+
+func (s *Server) resolveClientIP(r *http.Request) string {
+	peer := remoteAddressIP(r.RemoteAddr)
+	if peer == nil || !ipInNetworks(peer, s.trustedProxies) {
+		if peer != nil {
+			return peer.String()
+		}
+		return r.RemoteAddr
+	}
+	forwarded := strings.Join(r.Header.Values("X-Forwarded-For"), ",")
+	parts := strings.Split(forwarded, ",")
+	var leftmost net.IP
+	for i := len(parts) - 1; i >= 0; i-- {
+		candidate := net.ParseIP(strings.TrimSpace(parts[i]))
+		if candidate == nil {
+			continue
+		}
+		leftmost = candidate
+		if !ipInNetworks(candidate, s.trustedProxies) {
+			return candidate.String()
+		}
+	}
+	if leftmost != nil {
+		return leftmost.String()
+	}
+	return peer.String()
+}
+
+func remoteAddressIP(address string) net.IP {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	return net.ParseIP(strings.Trim(host, "[]"))
+}
+
+func ipInNetworks(ip net.IP, networks []*net.IPNet) bool {
+	for _, network := range networks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func isMutating(method string) bool {

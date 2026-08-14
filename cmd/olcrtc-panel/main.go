@@ -33,7 +33,7 @@ import (
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/traffic"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -50,6 +50,13 @@ func run(args []string) error {
 	switch command {
 	case "serve":
 		return serve(args)
+	case "health-url":
+		value, err := healthURL(args)
+		if err != nil {
+			return err
+		}
+		fmt.Println(value)
+		return nil
 	case "instance":
 		return instanceCommand(args)
 	case "credentials":
@@ -124,22 +131,11 @@ func serve(args []string) error {
 		}
 		fmt.Printf("DEV credentials: %s %s\n", username, password)
 	}
-	if configuredLimit, err := st.SettingOrDefault(context.Background(), "max_instances", ""); err == nil && configuredLimit != "" {
-		if value, parseErr := strconv.Atoi(configuredLimit); parseErr == nil && value >= 1 && value <= 1000 {
-			cfg.MaxInstances = value
-		}
+	if err := applyStoredSettings(context.Background(), st, &cfg); err != nil {
+		return err
 	}
-	if publicIP, err := st.SettingOrDefault(context.Background(), "public_ip", ""); err == nil && publicIP != "" {
-		cfg.PublicIP = publicIP
-	}
-	if publicPort, err := st.SettingOrDefault(context.Background(), "public_port", ""); err == nil && publicPort != "" {
-		if value, parseErr := strconv.Atoi(publicPort); parseErr == nil && value >= 1 && value <= 65535 {
-			cfg.PublicPort = value
-			host, _, splitErr := net.SplitHostPort(cfg.Listen)
-			if splitErr == nil {
-				cfg.Listen = net.JoinHostPort(host, strconv.Itoa(value))
-			}
-		}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("validate effective settings: %w", err)
 	}
 	certInfo, err := certificates.Ensure(cfg.TLSDir, cfg.PublicIP)
 	if err != nil {
@@ -147,8 +143,8 @@ func serve(args []string) error {
 	}
 	controller := systemd.New(cfg.SystemdEnabled)
 	instances := instance.NewManager(st, secrets, controller, cfg.InstancesDir, cfg.RuntimeDir, cfg.MaxInstances)
-	baseURL := publicURL(cfg)
-	subscriptions := subscription.NewService(st, instances, secrets, baseURL)
+	baseURL := cfg.PublicSubscriptionBaseURL()
+	subscriptions := subscription.NewServiceAtSubscriptionPath(st, instances, secrets, cfg.PublicSubscriptionBaseURL())
 	handler := server.New(cfg, st, instances, subscriptions, secrets, logger)
 	httpServer := &http.Server{
 		Addr:              cfg.Listen,
@@ -186,6 +182,91 @@ func serve(args []string) error {
 			return nil
 		}
 		return err
+	}
+}
+
+func healthURL(args []string) (string, error) {
+	flags := flag.NewFlagSet("health-url", flag.ContinueOnError)
+	configPath := flags.String("config", "/etc/olcrtc-panel/config.yaml", "panel YAML config")
+	if err := flags.Parse(args); err != nil {
+		return "", err
+	}
+	if flags.NArg() != 0 {
+		return "", errors.New("health-url accepts only --config")
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return "", err
+	}
+	st, err := store.OpenReadOnly(cfg.DatabasePath)
+	if err != nil {
+		return "", err
+	}
+	defer st.Close()
+	if err := applyStoredSettings(context.Background(), st, &cfg); err != nil {
+		return "", err
+	}
+	if err := cfg.Validate(); err != nil {
+		return "", fmt.Errorf("validate effective settings: %w", err)
+	}
+	host, port, err := net.SplitHostPort(cfg.Listen)
+	if err != nil {
+		return "", fmt.Errorf("parse listen address: %w", err)
+	}
+	switch host {
+	case "", "0.0.0.0":
+		host = "127.0.0.1"
+	case "::":
+		host = "::1"
+	}
+	return "https://" + net.JoinHostPort(host, port) + config.JoinURLPath(cfg.PanelPath, "/"), nil
+}
+
+func applyStoredSettings(ctx context.Context, st *store.Store, cfg *config.Config) error {
+	configuredLimit, err := st.SettingOrDefault(ctx, "max_instances", "")
+	if err != nil {
+		return fmt.Errorf("load max_instances setting: %w", err)
+	}
+	if value, parseErr := strconv.Atoi(configuredLimit); configuredLimit != "" && parseErr == nil && value >= 1 && value <= 1000 {
+		cfg.MaxInstances = value
+	}
+	publicIP, err := st.SettingOrDefault(ctx, "public_ip", "")
+	if err != nil {
+		return fmt.Errorf("load public_ip setting: %w", err)
+	}
+	if publicIP != "" {
+		cfg.PublicIP = publicIP
+	}
+	publicPort, err := st.SettingOrDefault(ctx, "public_port", "")
+	if err != nil {
+		return fmt.Errorf("load public_port setting: %w", err)
+	}
+	if value, parseErr := strconv.Atoi(publicPort); publicPort != "" && parseErr == nil && value >= 1 && value <= 65535 {
+		applyStoredPublicPort(cfg, value)
+	}
+	for key, target := range map[string]*string{
+		"public_origin":     &cfg.PublicOrigin,
+		"panel_path":        &cfg.PanelPath,
+		"subscription_path": &cfg.SubscriptionPath,
+	} {
+		value, _, settingErr := st.Setting(ctx, key)
+		switch {
+		case settingErr == nil:
+			*target = value
+		case store.IsNotFound(settingErr):
+		default:
+			return fmt.Errorf("load %s setting: %w", key, settingErr)
+		}
+	}
+	return nil
+}
+
+func applyStoredPublicPort(cfg *config.Config, value int) {
+	host, listenPort, err := net.SplitHostPort(cfg.Listen)
+	listenFollowsPublicPort := err == nil && listenPort == strconv.Itoa(cfg.PublicPort)
+	cfg.PublicPort = value
+	if listenFollowsPublicPort {
+		cfg.Listen = net.JoinHostPort(host, strconv.Itoa(value))
 	}
 }
 
@@ -324,14 +405,7 @@ func resetCredentials(ctx context.Context, st *store.Store) (string, string, err
 }
 
 func publicURL(cfg config.Config) string {
-	host := cfg.PublicIP
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	return "https://" + host + ":" + strconv.Itoa(cfg.PublicPort)
+	return cfg.PublicBaseURL()
 }
 
 func supervise(ctx context.Context, logger *slog.Logger, name string, run func(context.Context) error) {

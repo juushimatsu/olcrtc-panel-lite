@@ -32,13 +32,37 @@ func TestSubscriptionUIExposesClientAndOLCBOXProjections(t *testing.T) {
 	for _, required := range []string{
 		"QR OLCRTC Client",
 		"QR OLCBOX",
-		"/sub/${sub.slug}/olcbox",
+		"subscriptionURL(sub.slug, '/olcbox')",
 		"payload?format=${format}",
 		"OLCBOX URI — в OLCBOX feed",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("subscription UI is missing %q", required)
 		}
+	}
+}
+
+func TestFrontendUsesInjectedPanelAndSubscriptionBases(t *testing.T) {
+	app, err := fs.ReadFile(Static, "static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(app)
+	for _, required := range []string{
+		`meta[name="olcrtc-panel-base"]`,
+		`meta[name="olcrtc-subscription-base"]`,
+		"fetch(panelURL(path)",
+		"panelURL(`/api/v1/instances/${id}/qr?format=${format}`)",
+		"panelURL(`/api/v1/subscriptions/${encodeURIComponent(slug)}/qr?format=${format}`)",
+		"subscriptionURL(sub.slug, '/open')",
+		"function updatePublicURLPreview(form)",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("custom path support is missing %q", required)
+		}
+	}
+	if strings.Contains(source, "location.origin+'/sub/'") || strings.Contains(source, "`${location.origin}/sub/") {
+		t.Fatal("frontend still builds subscription URLs from the domain root")
 	}
 }
 
@@ -84,7 +108,8 @@ func TestTelemostPlaywrightFlowFillsInstanceRoom(t *testing.T) {
 	source := string(app)
 	for _, required := range []string{
 		`data-action="telemost-fill-instance"`,
-		"provider:'telemost'",
+		"api('/api/v1/automation/telemost/session'",
+		"waitForAutomationSession('telemost')",
 		"form.elements.provider.value='telemost'",
 		"form.elements.transport.value='vp8channel'",
 		"normalizeRoomID('telemost',current.state?.room_id||'')",

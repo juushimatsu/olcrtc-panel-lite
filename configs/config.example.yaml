@@ -1,6 +1,12 @@
 listen: "0.0.0.0:8443"
 public_ip: "203.0.113.10"
 public_port: 8443
+public_origin: ""
+panel_path: "/"
+subscription_path: "/sub"
+trusted_proxies:
+  - "127.0.0.1/32"
+  - "::1/128"
 database_path: "/var/lib/olcrtc-panel/panel.db"
 master_key_path: "/etc/olcrtc-panel/master.key"
 instances_dir: "/etc/olcrtc-panel/instances"
@@ -15,4 +21,4 @@ cookie_name: "olcrtc_panel_session"
 hsts: false
 release_manifest_url: ""
 upstream_sha: ""
-panel_version: "0.2.0"
+panel_version: "0.3.0"

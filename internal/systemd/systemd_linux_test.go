@@ -79,6 +79,26 @@ EOF
 	}
 }
 
+func TestParseProcUptimeMicros(t *testing.T) {
+	tests := map[string]uint64{
+		"12":         12_000_000,
+		"12.34":      12_340_000,
+		"12.3456789": 12_345_678,
+		"0.000001":   1,
+	}
+	for input, want := range tests {
+		got, ok := parseProcUptimeMicros(input)
+		if !ok || got != want {
+			t.Fatalf("parseProcUptimeMicros(%q)=(%d,%v), want (%d,true)", input, got, ok, want)
+		}
+	}
+	for _, input := range []string{"", "invalid", "-1"} {
+		if got, ok := parseProcUptimeMicros(input); ok {
+			t.Fatalf("parseProcUptimeMicros(%q)=(%d,true)", input, got)
+		}
+	}
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false

@@ -4,6 +4,10 @@ umask 077
 
 STATE_FILE=/run/olcrtc-wb-components-state.json
 INSTALL_DIR=/opt/olcrtc-panel/wb
+PROFILE_ROOT=/var/lib/olcrtc-wb/profiles
+LEGACY_PROFILE=/var/lib/olcrtc-wb/profile
+WB_PROFILE="$PROFILE_ROOT/wbstream"
+TELEMOST_PROFILE="$PROFILE_ROOT/telemost"
 PACKAGE_MANIFEST="$INSTALL_DIR/packages-installed-by-panel"
 PLAYWRIGHT_VERSION=1.55.0
 NODE_VERSION=20.19.4
@@ -33,7 +37,11 @@ write_state packages "Установка системных компоненто
 apt-get install -y --no-install-recommends "${packages[@]}"
 id olcrtc-wb >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/olcrtc-wb --shell /usr/sbin/nologin olcrtc-wb
 install -d -m 0755 -o root -g root "$INSTALL_DIR"
-install -d -m 0700 -o olcrtc-wb -g olcrtc-wb /var/lib/olcrtc-wb /var/lib/olcrtc-wb/profile
+install -d -m 0700 -o olcrtc-wb -g olcrtc-wb /var/lib/olcrtc-wb "$PROFILE_ROOT"
+if [ -d "$LEGACY_PROFILE" ] && [ ! -e "$WB_PROFILE" ]; then
+    mv "$LEGACY_PROFILE" "$WB_PROFILE"
+fi
+install -d -m 0700 -o olcrtc-wb -g olcrtc-wb "$WB_PROFILE" "$TELEMOST_PROFILE"
 install -m 0644 -o root -g root /usr/lib/olcrtc-panel/wb/worker.mjs "$INSTALL_DIR/worker.mjs"
 
 write_state node "Установка pinned Node.js" 35

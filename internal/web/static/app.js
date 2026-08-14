@@ -1,4 +1,6 @@
 const app = document.querySelector('#app');
+const panelBase = document.querySelector('meta[name="olcrtc-panel-base"]')?.content || '/';
+const subscriptionBase = (document.querySelector('meta[name="olcrtc-subscription-base"]')?.content || `${location.origin}/sub`).replace(/\/$/, '');
 
 const state = {
   user: null,
@@ -17,6 +19,7 @@ const state = {
   updateNoticeDismissed: false,
   mirrorSyncRunning: false,
   settingsPolling: false,
+  instancesPolling: false,
   expandedInstance: null,
   expandedSubscription: null,
   hideNetworkInfo: true,
@@ -25,6 +28,7 @@ const state = {
   logsLevel: '',
   logsPaused: false,
   poller: null,
+  uptimeTicker: null,
 };
 
 const navItems = [
@@ -53,7 +57,7 @@ async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   if (state.csrf && options.method && !['GET', 'HEAD'].includes(options.method)) headers.set('X-CSRF-Token', state.csrf);
-  const response = await fetch(path, { credentials: 'same-origin', ...options, headers });
+  const response = await fetch(panelURL(path), { credentials: 'same-origin', ...options, headers });
   if (response.status === 204) return null;
   const contentType = response.headers.get('content-type') || '';
   const payload = contentType.includes('application/json') ? await response.json() : await response.text();
@@ -69,6 +73,17 @@ async function api(path, options = {}) {
     throw error;
   }
   return payload;
+}
+
+function panelURL(path = '/') {
+  if (/^https?:\/\//i.test(path)) return path;
+  const route = path.startsWith('/') ? path : `/${path}`;
+  if (panelBase === '/') return route;
+  return `${panelBase.replace(/\/$/, '')}${route}`;
+}
+
+function subscriptionURL(slug, suffix = '') {
+  return `${subscriptionBase}/${encodeURIComponent(slug)}${suffix}`;
 }
 
 function renderLogin(message = '') {
@@ -234,9 +249,62 @@ function networkVisibilityButton() {
 }
 
 async function loadInstances() {
-  const result = await api('/api/v1/instances');
-  state.instances = result.items || [];
-  renderInstances();
+  await refreshInstances();
+  if (state.page !== 'instances') return;
+  if (!state.poller) state.poller = setInterval(() => refreshInstances().catch(() => {}), 7000);
+  if (!state.uptimeTicker) state.uptimeTicker = setInterval(tickInstanceUptimes, 1000);
+}
+
+async function refreshInstances() {
+  if (state.instancesPolling) return;
+  state.instancesPolling = true;
+  try {
+    const result = await api('/api/v1/instances');
+    if (state.page !== 'instances') return;
+    state.instances = mergeInstanceSnapshots(result.items || []);
+    renderInstances();
+  } finally {
+    state.instancesPolling = false;
+  }
+}
+
+function mergeInstanceSnapshots(items) {
+  const previous = new Map(state.instances.map(item => [item.id, item]));
+  return items.map(item => {
+    const old = previous.get(item.id);
+    const runtimeChanged = !!old && !sameRuntimeIdentity(old, item);
+    return { ...item, runtime_changed: runtimeChanged };
+  });
+}
+
+function sameRuntimeIdentity(left, right) {
+  return String(left?.invocation_id || '') === String(right?.invocation_id || '')
+    && Number(left?.main_pid || 0) === Number(right?.main_pid || 0)
+    && Number(left?.restart_count || 0) === Number(right?.restart_count || 0);
+}
+
+function currentInstanceUptime(item, field = 'uptime_seconds', now = Date.now()) {
+  if (item?.status !== 'running') return 0;
+  const base = Math.max(0, Math.floor(Number(item?.[field]) || 0));
+  const source = field === 'process_uptime_seconds' ? item?.process_uptime_source : item?.uptime_source;
+  const tickable = field === 'process_uptime_seconds' ? source === 'exec_main_start_monotonic' : source === 'active_enter_monotonic' || source === 'active_enter_usec';
+  if (!tickable) return base;
+  const observedAt = Date.parse(item?.observed_at || '');
+  if (!Number.isFinite(observedAt)) return base;
+  return base + Math.max(0, Math.floor((now - observedAt) / 1000));
+}
+
+function tickInstanceUptimes() {
+  if (state.page !== 'instances') return;
+  const byID = new Map(state.instances.map(item => [String(item.id), item]));
+  document.querySelectorAll('[data-instance-uptime]').forEach(root => {
+    const item = byID.get(root.dataset.instanceUptime);
+    if (item) root.textContent = formatUptime(currentInstanceUptime(item));
+  });
+  document.querySelectorAll('[data-instance-process-uptime]').forEach(root => {
+    const item = byID.get(root.dataset.instanceProcessUptime);
+    if (item) root.textContent = formatUptime(currentInstanceUptime(item, 'process_uptime_seconds'));
+  });
 }
 
 function renderInstances() {
@@ -270,7 +338,8 @@ function instanceTable(items) {
 function instanceRow(item) {
   const quotaPct = item.quota_bytes ? percent(item.total_bytes, item.quota_bytes) : 0;
   const tokenBadge = item.provider === 'wbstream' && item.auth_token_expired ? ' <span class="chip red" title="Обновите token через Playwright">token истёк</span>' : '';
-  return `<tr><td><button class="expand-button" data-action="expand-instance" data-id="${item.id}" aria-label="Раскрыть ${attr(item.name)}">${state.expandedInstance === item.id ? '−' : '+'}</button></td><td>${item.id}</td><td><strong>${esc(item.name)}</strong>${tokenBadge}</td><td><span class="chip ${item.provider === 'wbstream' ? 'purple' : 'green'}">${esc(item.provider)}</span></td><td><span class="chip blue">${esc(item.transport)}</span></td><td class="mono truncate" style="max-width:190px" title="${state.hideNetworkInfo ? '' : attr(item.room_id)}">${state.hideNetworkInfo ? '••••••' : esc(item.room_id)}</td><td><span class="chip ${esc(item.status)}">${statusLabel(item.status)}</span></td><td>${formatUptime(item.uptime_seconds)}</td><td class="traffic-cell"><div class="traffic-value"><span>${formatBytes(item.total_bytes)}</span><span>${item.quota_bytes ? `${quotaPct.toFixed(0)}%` : '∞'}</span></div><div class="progress"><span style="width:${Math.min(quotaPct,100)}%"></span></div></td><td>${quotaLabel(item)}</td><td><button class="btn btn-ghost btn-icon" data-action="expand-instance" data-id="${item.id}" aria-label="Меню">⋮</button></td></tr>`;
+  const runtimeBadge = item.runtime_changed ? ' <span class="chip blue" title="Изменились Invocation ID, Main PID или счётчик рестартов">перезапущен</span>' : '';
+  return `<tr><td><button class="expand-button" data-action="expand-instance" data-id="${item.id}" aria-label="Раскрыть ${attr(item.name)}">${state.expandedInstance === item.id ? '−' : '+'}</button></td><td>${item.id}</td><td><strong>${esc(item.name)}</strong>${tokenBadge}${runtimeBadge}</td><td><span class="chip ${item.provider === 'wbstream' ? 'purple' : 'green'}">${esc(item.provider)}</span></td><td><span class="chip blue">${esc(item.transport)}</span></td><td class="mono truncate" style="max-width:190px" title="${state.hideNetworkInfo ? '' : attr(item.room_id)}">${state.hideNetworkInfo ? '••••••' : esc(item.room_id)}</td><td><span class="chip ${esc(item.status)}">${statusLabel(item.status)}</span></td><td><span data-instance-uptime="${item.id}" title="${attr(item.uptime_source || 'unavailable')}">${formatUptime(currentInstanceUptime(item))}</span></td><td class="traffic-cell"><div class="traffic-value"><span>${formatBytes(item.total_bytes)}</span><span>${item.quota_bytes ? `${quotaPct.toFixed(0)}%` : '∞'}</span></div><div class="progress"><span style="width:${Math.min(quotaPct,100)}%"></span></div></td><td>${quotaLabel(item)}</td><td><button class="btn btn-ghost btn-icon" data-action="expand-instance" data-id="${item.id}" aria-label="Меню">⋮</button></td></tr>`;
 }
 
 function instanceExpanded(item) {
@@ -279,7 +348,7 @@ function instanceExpanded(item) {
   return `<tr class="expanded-row"><td colspan="11"><div class="expanded-content"><div class="expanded-actions">
     ${item.status === 'running' ? `<button class="btn btn-small" data-action="instance-stop" data-id="${item.id}">■ Остановить</button><button class="btn btn-small" data-action="instance-restart" data-id="${item.id}">↻ Перезапустить</button>` : `<button class="btn btn-primary btn-small" data-action="instance-start" data-id="${item.id}">▶ Запустить</button>`}
     <button class="btn btn-small" data-action="edit-instance" data-id="${item.id}">✎ Изменить</button><button class="btn btn-small" data-action="instance-qr" data-id="${item.id}" data-format="olcbox">QR OLCBOX</button><button class="btn btn-small" data-action="instance-qr" data-id="${item.id}" data-format="client" ${clientUnavailable ? `disabled title="${attr(clientUnavailable)}"` : 'title="QR содержит данные подключения; для WB — полный auth token"'}>QR OLCRTC Client</button><button class="btn btn-small" data-action="instance-rotate-key" data-id="${item.id}">⌘ Ротация key</button><button class="btn btn-small" data-action="instance-rotate-client-id" data-id="${item.id}">⟳ Ротация client_id</button>${item.provider === 'wbstream' ? `<button class="btn btn-small" data-action="wb-playwright-refresh">↻ Обновить WB token</button>` : ''}<button class="btn btn-small" data-action="instance-change-room" data-id="${item.id}">⌂ Room ID</button><button class="btn btn-small" data-action="instance-diagnostics" data-id="${item.id}">◇ Диагностика</button><button class="btn btn-small" data-action="instance-logs" data-id="${item.id}">⌁ Логи</button><button class="btn btn-small" data-action="instance-reset-traffic" data-id="${item.id}">↺ Сбросить трафик</button><button class="btn btn-danger btn-small" data-action="instance-delete" data-id="${item.id}">Удалить</button>
-  </div>${clientUnavailable ? `<div class="notice" style="margin-bottom:14px">QR OLCRTC Client недоступен: ${esc(clientUnavailable)}. QR OLCBOX остаётся доступным.</div>` : item.provider === 'wbstream' ? '<div class="notice" style="margin-bottom:14px">QR OLCRTC Client содержит полный WB auth token. Считайте этот QR credential и передавайте только получателю.</div>' : ''}<div class="expanded-stats">${detail('Client ID', item.client_id, 'mono')}${detail('WB auth token', tokenStatus, item.auth_token_expired ? 'danger-text' : '')}${detail('Upload', formatBytes(item.upload_bytes))}${detail('Download', formatBytes(item.download_bytes))}${detail('Последний трафик', item.last_traffic_at ? formatDate(item.last_traffic_at) : 'Нет данных')}${detail('Reset policy', item.reset_policy)}${detail('DNS', item.dns)}${detail('Совместимость OLCBOX', compatibility(item.provider,item.transport) || 'Стабильная комбинация')}</div></div></td></tr>`;
+  </div>${clientUnavailable ? `<div class="notice" style="margin-bottom:14px">QR OLCRTC Client недоступен: ${esc(clientUnavailable)}. QR OLCBOX остаётся доступным.</div>` : item.provider === 'wbstream' ? '<div class="notice" style="margin-bottom:14px">QR OLCRTC Client содержит полный WB auth token. Считайте этот QR credential и передавайте только получателю.</div>' : ''}<div class="expanded-stats">${detail('Client ID', item.client_id, 'mono')}${detail('WB auth token', tokenStatus, item.auth_token_expired ? 'danger-text' : '')}${detail('Uptime сервиса', `<span data-instance-uptime="${item.id}">${formatUptime(currentInstanceUptime(item))}</span>`)}${detail('Uptime процесса', `<span data-instance-process-uptime="${item.id}" title="${attr(item.process_uptime_source || 'unavailable')}">${formatUptime(currentInstanceUptime(item,'process_uptime_seconds'))}</span>`)}${detail('Запущен', item.started_at ? formatDate(item.started_at) : 'Нет данных')}${detail('Uptime source', item.uptime_source || 'unavailable')}${detail('Main PID', item.main_pid || 0)}${detail('Рестарты', item.restart_count || 0)}${detail('Invocation ID', item.invocation_id || '—', 'mono')}${detail('Upload', formatBytes(item.upload_bytes))}${detail('Download', formatBytes(item.download_bytes))}${detail('Последний трафик', item.last_traffic_at ? formatDate(item.last_traffic_at) : 'Нет данных')}${detail('Reset policy', item.reset_policy)}${detail('DNS', item.dns)}${detail('Совместимость OLCBOX', compatibility(item.provider,item.transport) || 'Стабильная комбинация')}</div></div></td></tr>`;
 }
 
 function openInstanceForm(item = null) {
@@ -424,13 +493,13 @@ function renderSubscriptions() {
 }
 
 function subscriptionCard(sub) {
-  const clientURL = `${location.origin}/sub/${sub.slug}`;
-  const olcboxURL = `${location.origin}/sub/${sub.slug}/olcbox`;
+  const clientURL = subscriptionURL(sub.slug);
+  const olcboxURL = subscriptionURL(sub.slug, '/olcbox');
   return `<article class="panel subscription-card"><div class="subscription-main"><div class="subscription-name"><div class="subscription-icon">${esc(sub.icon || '≋')}</div><div class="truncate"><strong>${esc(sub.name)}</strong><small class="mono truncate">${esc(sub.slug)}</small></div></div><div><small>Трафик</small><strong>${formatBytes(sub.used_bytes || 0)} / ${sub.available_bytes == null ? '∞' : formatBytes((sub.used_bytes||0)+sub.available_bytes)}</strong></div><div><small>Entries</small><strong>${sub.entries?.length || 0}</strong></div><div><small>Mirror Client</small><span class="chip ${esc(sub.mirror_status || 'disabled')}">${esc(sub.mirror_status || 'disabled')}</span></div><div class="toolbar-actions"><button class="btn btn-small" data-action="copy" data-value="${attr(clientURL)}">URL Client</button><button class="btn btn-small" data-action="copy" data-value="${attr(olcboxURL)}">URL OLCBOX</button><button class="btn btn-small btn-icon" data-action="expand-subscription" data-slug="${attr(sub.slug)}">${state.expandedSubscription === sub.slug ? '−' : '+'}</button></div></div>${state.expandedSubscription === sub.slug ? subscriptionExpanded(sub) : ''}</article>`;
 }
 
 function subscriptionExpanded(sub) {
-  return `<div class="subscription-details"><div class="expanded-actions"><button class="btn btn-small" data-action="subscription-qr" data-format="client" data-slug="${attr(sub.slug)}">QR OLCRTC Client</button><button class="btn btn-small" data-action="subscription-qr" data-format="olcbox" data-slug="${attr(sub.slug)}">QR OLCBOX</button><button class="btn btn-small" data-action="add-entry" data-slug="${attr(sub.slug)}">＋ Entry</button>${sub.mirror_enabled ? `<button class="btn btn-small" data-action="sync-mirror" data-slug="${attr(sub.slug)}">↻ Sync mirror Client</button>` : ''}<button class="btn btn-small" data-action="edit-subscription" data-slug="${attr(sub.slug)}">✎ Изменить</button><button class="btn btn-danger btn-small" data-action="delete-subscription" data-slug="${attr(sub.slug)}">Удалить</button></div><div class="fingerprint mono">OLCRTC Client: ${esc(location.origin+'/sub/'+sub.slug)}<br>OLCBOX: ${esc(location.origin+'/sub/'+sub.slug+'/olcbox')}<br>Открыть в клиенте: ${esc(location.origin+'/sub/'+sub.slug+'/open')}</div><div class="notice info" style="margin:14px 0">OLCBOX получает plain-text sub.md и обычные OLCBOX URI. Yandex encrypted mirror остаётся проекцией OLCRTC Client.</div><div class="entry-list">${sub.entries?.length ? sub.entries.map(entryRow).join('') : '<div class="muted">Нет entries. Подписка публикует пустой список.</div>'}</div></div>`;
+  return `<div class="subscription-details"><div class="expanded-actions"><button class="btn btn-small" data-action="subscription-qr" data-format="client" data-slug="${attr(sub.slug)}">QR OLCRTC Client</button><button class="btn btn-small" data-action="subscription-qr" data-format="olcbox" data-slug="${attr(sub.slug)}">QR OLCBOX</button><button class="btn btn-small" data-action="add-entry" data-slug="${attr(sub.slug)}">＋ Entry</button>${sub.mirror_enabled ? `<button class="btn btn-small" data-action="sync-mirror" data-slug="${attr(sub.slug)}">↻ Sync mirror Client</button>` : ''}<button class="btn btn-small" data-action="edit-subscription" data-slug="${attr(sub.slug)}">✎ Изменить</button><button class="btn btn-danger btn-small" data-action="delete-subscription" data-slug="${attr(sub.slug)}">Удалить</button></div><div class="fingerprint mono">OLCRTC Client: ${esc(subscriptionURL(sub.slug))}<br>OLCBOX: ${esc(subscriptionURL(sub.slug, '/olcbox'))}<br>Открыть в клиенте: ${esc(subscriptionURL(sub.slug, '/open'))}</div><div class="notice info" style="margin:14px 0">OLCBOX получает plain-text sub.md и обычные OLCBOX URI. Yandex encrypted mirror остаётся проекцией OLCRTC Client.</div><div class="entry-list">${sub.entries?.length ? sub.entries.map(entryRow).join('') : '<div class="muted">Нет entries. Подписка публикует пустой список.</div>'}</div></div>`;
 }
 
 function entryRow(entry) {
@@ -457,7 +526,7 @@ function openEntryForm(slug) {
 async function loadSettings() {
   const [settings, wbOperation, updateOperation] = await Promise.all([
     api('/api/v1/settings'),
-    api('/api/v1/wb/components/progress').catch(() => ({ state: 'idle', percent: 0 })),
+    api('/api/v1/automation/components/progress').catch(() => ({ state: 'idle', percent: 0 })),
     api('/api/v1/updates/progress').catch(() => ({ state: 'idle', percent: 0 })),
   ]);
   state.settings = settings;
@@ -480,12 +549,12 @@ function renderSettings() {
   const wbTokenStatus = !s.wb.token_set ? 'Не задан' : s.wb.token_expired ? 'Истёк — обновите через Playwright' : s.wb.token_expires_at ? `Действует до ${formatDate(s.wb.token_expires_at)}` : 'Задан, срок неизвестен';
   document.querySelector('#page-content').innerHTML = `
     <section class="page"><div class="page-header"><div class="page-title"><h1>Настройки</h1><p>Безопасность, HTTPS, интеграции и обслуживание</p></div></div><div class="settings-layout">
-      <nav class="panel settings-nav"><button data-action="scroll-setting" data-target="security">Безопасность</button><button data-action="scroll-setting" data-target="https">HTTPS и IP</button><button data-action="scroll-setting" data-target="updates">Обновления</button><button data-action="scroll-setting" data-target="wb">WB Stream</button><button data-action="scroll-setting" data-target="yandex">Yandex mirror</button><button data-action="scroll-setting" data-target="instances-settings">Инстансы</button><button data-action="scroll-setting" data-target="interface">Интерфейс</button><button data-action="scroll-setting" data-target="backup">Backup</button></nav>
+      <nav class="panel settings-nav"><button data-action="scroll-setting" data-target="security">Безопасность</button><button data-action="scroll-setting" data-target="https">HTTPS и URL</button><button data-action="scroll-setting" data-target="updates">Обновления</button><button data-action="scroll-setting" data-target="automation">Автоматизация WB и Telemost</button><button data-action="scroll-setting" data-target="yandex">Yandex mirror</button><button data-action="scroll-setting" data-target="instances-settings">Инстансы</button><button data-action="scroll-setting" data-target="interface">Интерфейс</button><button data-action="scroll-setting" data-target="backup">Backup</button></nav>
       <div>
         ${settingsSection('security','Безопасность',`<form data-form="credentials" class="form-grid">${field('username','Новый логин',state.user || '')}${field('current_password','Текущий пароль','','password','Обязательно',true)}${field('new_password','Новый пароль','','password','Пусто = оставить текущий')}<div class="wide form-actions"><button class="btn" type="button" data-action="revoke-sessions">Завершить все сессии</button><button class="btn btn-primary" type="submit">Изменить credentials</button></div></form>`)}
-        ${settingsSection('https','HTTPS и IP',`<form data-form="https-settings"><div class="form-grid">${field('public_ip','Публичный IP',s.https.public_ip || '')}${field('public_port','HTTPS порт',s.https.port,'number')}</div><div class="form-actions"><a class="btn" href="/ca.crt" download>Скачать CA</a><button class="btn" type="button" data-action="regenerate-cert">Регенерировать leaf</button><button class="btn btn-primary" type="submit">Сохранить IP / порт</button></div></form><p class="field-label">CA fingerprint</p><div class="fingerprint mono">${esc(s.https.ca_fingerprint || '')}</div><p class="field-label">Server fingerprint</p><div class="fingerprint mono">${esc(s.https.server_fingerprint || '')}</div><div class="notice" style="margin-top:14px">После смены порта перезапустите panel service. CA необходимо сверить с fingerprint из консоли VPS.</div>`)}
+        ${settingsSection('https','HTTPS и публичные URL',`<form data-form="https-settings"><div class="form-grid">${field('public_ip','Публичный IP',s.https.public_ip || '')}${field('public_port','HTTPS порт',s.https.port,'number')}${field('public_origin','Публичный HTTPS origin',s.https.public_origin || '','url','https://example.com')}${field('panel_path','Путь панели',s.https.panel_path || '/','text','/control-a8f3',true)}${field('subscription_path','Путь подписок',s.https.subscription_path || '/sub','text','/feeds-b19c',true)}</div><div class="notice info" data-role="public-url-preview" style="margin-top:14px">Панель: ${esc(s.https.panel_url || '')}<br>Подписка: ${esc((s.https.subscription_url || '') + '/example-slug')}</div>${s.https.restart_required ? '<div class="notice" style="margin-top:10px">Новые origin и пути сохранены, но ещё не активны. Перезапустите panel service. Старые ссылки и QR-коды после смены URL перестанут работать.</div>' : ''}<div class="form-actions"><a class="btn" href="${attr(panelURL('/ca.crt'))}" download>Скачать CA</a><button class="btn" type="button" data-action="regenerate-cert">Регенерировать leaf</button><button class="btn btn-primary" type="submit">Сохранить HTTPS и URL</button></div></form><p class="field-label">CA fingerprint</p><div class="fingerprint mono">${esc(s.https.ca_fingerprint || '')}</div><p class="field-label">Server fingerprint</p><div class="fingerprint mono">${esc(s.https.server_fingerprint || '')}</div><div class="notice" style="margin-top:14px">После смены порта или публичных URL перезапустите panel service. CA необходимо сверить с fingerprint из консоли VPS.</div>`)}
         ${settingsSection('updates','Обновления',`<div class="detail-list">${detail('Текущий bundle',currentRelease.bundle_id || 'не определён')}${detail('Версия панели',currentRelease.panel_version || s.updates.panel_version)}${detail('Upstream SHA',shortSHA(currentRelease.upstream_sha || s.updates.upstream_sha))}${detail('Release manifest',s.updates.configured ? 'Настроен' : 'Не задан')}</div><div class="form-actions"><button class="btn" data-action="check-updates" ${updateRunning ? 'disabled' : ''}>Обновить список</button><button class="btn btn-primary" data-action="install-update" ${updateRunning || !latestRelease || latestRelease.current ? 'disabled' : ''}>Обновить до последнего</button><button class="btn" data-action="rollback-update" ${updateRunning || !releases.rollback_available ? 'disabled' : ''}>Rollback</button></div><div id="update-operation">${operationProgressHTML(state.updateOperation, 'Обновление')}</div><div id="release-list">${releaseCatalogHTML(releases, updateRunning)}</div>`)}
-        ${settingsSection('wb','WB Stream automation',`<div class="detail-list">${detail('Платформа',s.wb.supported ? 'linux/amd64' : 'Не поддерживается')}${detail('Components',s.wb.installed ? 'Установлены' : 'Не установлены')}${detail('Auth token',wbTokenStatus,s.wb.token_expired ? 'danger-text' : '')}</div><div class="notice info" style="margin-top:14px">Playwright использует постоянный Chromium profile. Login и CAPTCHA выполняются вручную через авторизованный noVNC route; фонового обновления token нет.</div><div class="notice" style="margin-top:10px">WB auth token входит только в URI/QR OLCRTC Client и делает такой QR credential. QR OLCBOX token не содержит.</div><div class="form-actions wb-actions"><button class="btn btn-primary" data-action="wb-install" ${!s.wb.supported || wbRunning ? 'disabled' : ''}>Установить components</button><button class="btn btn-danger" data-action="wb-remove" ${!s.wb.supported || wbRunning ? 'disabled' : ''}>Удалить components</button><button class="btn" data-action="wb-session-create" ${!s.wb.installed ? 'disabled' : ''}>Playwright: создать комнату</button><button class="btn ${s.wb.token_expired ? 'btn-primary' : ''}" data-action="wb-playwright-refresh" ${!s.wb.installed ? 'disabled' : ''}>Playwright: обновить token</button><button class="btn" data-action="wb-token">Ввести token вручную (fallback)</button><button class="btn btn-danger" data-action="wb-profile-reset" ${!s.wb.installed ? 'disabled' : ''} title="Остановить сессию и очистить Chromium profile — при следующем запуске потребуется войти заново">↺ Сбросить профиль (перезайти)</button></div><div id="wb-operation">${operationProgressHTML(state.wbOperation, 'WB components')}</div>`)}
+        ${settingsSection('automation','Автоматизация WB и Telemost',`<div class="detail-list">${detail('Платформа',s.wb.supported ? 'linux/amd64' : 'Не поддерживается')}${detail('Components',s.wb.installed ? 'Установлены' : 'Не установлены')}</div><div class="form-actions wb-actions"><button class="btn btn-primary" data-action="wb-install" ${!s.wb.supported || wbRunning ? 'disabled' : ''}>Установить components</button><button class="btn btn-danger" data-action="wb-remove" ${!s.wb.supported || wbRunning ? 'disabled' : ''}>Удалить components</button></div><div id="wb-operation">${operationProgressHTML(state.wbOperation, 'Automation components')}</div><section class="automation-provider"><h3>WB Stream</h3><div class="detail-list">${detail('Auth token',wbTokenStatus,s.wb.token_expired ? 'danger-text' : '')}</div><div class="notice info" style="margin-top:14px">Playwright использует отдельный постоянный Chromium profile WB Stream. Login и CAPTCHA выполняются вручную через авторизованный noVNC route.</div><div class="notice" style="margin-top:10px">WB auth token входит только в URI/QR OLCRTC Client и делает такой QR credential. QR OLCBOX token не содержит.</div><div class="form-actions wb-actions"><button class="btn" data-action="wb-session-create" ${!s.wb.installed ? 'disabled' : ''}>Playwright: создать комнату</button><button class="btn ${s.wb.token_expired ? 'btn-primary' : ''}" data-action="wb-playwright-refresh" ${!s.wb.installed ? 'disabled' : ''}>Playwright: обновить token</button><button class="btn" data-action="wb-token">Ввести token вручную (fallback)</button><button class="btn btn-danger" data-action="wb-profile-reset" ${!s.wb.installed ? 'disabled' : ''} title="Остановить сессию и очистить Chromium profile WB Stream">↺ Сбросить профиль (перезайти)</button></div></section><section class="automation-provider"><h3>Telemost</h3><div class="notice info">Playwright использует отдельный постоянный Chromium profile Telemost. Если Яндекс запросит вход, завершите его через noVNC.</div><div class="form-actions wb-actions"><button class="btn" data-action="telemost-session-create" ${!s.wb.installed ? 'disabled' : ''}>Playwright: создать комнату</button><button class="btn btn-danger" data-action="telemost-profile-reset" ${!s.wb.installed ? 'disabled' : ''} title="Остановить сессию и очистить Chromium profile Telemost">↺ Сбросить профиль (перезайти)</button></div></section>`)}
         ${settingsSection('yandex','Yandex encrypted mirror',`<form data-form="yandex"><div class="form-grid"><label class="checkbox"><input type="checkbox" name="yandex_enabled" ${s.yandex.enabled ? 'checked' : ''}> Включить глобально</label>${field('yandex_base_path','Base path',s.yandex.base_path || '/olcrtc/subscriptions')}${field('yandex_oauth_token','OAuth token','','password',s.yandex.token_set ? 'Token сохранён; пусто = не менять' : 'Введите token')}<label class="checkbox"><input type="checkbox" name="clear_yandex_token"> Удалить сохранённый token</label></div><div class="form-actions"><button class="btn btn-primary" type="submit">Сохранить Yandex settings</button></div></form><details style="margin-top:18px"><summary style="cursor:pointer;color:var(--muted);font-size:12px;font-weight:520">Инструкция: как получить Yandex OAuth-токен</summary><div style="margin-top:14px;display:grid;gap:12px;font-size:13px"><p style="margin:0"><strong>Шаг 1. Создать OAuth-приложение в Яндексе</strong></p><ol style="margin:0;padding-left:20px;color:var(--muted);line-height:1.7"><li>Открой <a href="https://oauth.yandex.ru/client/new" target="_blank" rel="noopener">oauth.yandex.ru/client/new</a> под аккаунтом, на Диск которого будет публиковаться mirror.</li><li>Заполни поля:<ul style="margin:6px 0"><li><strong>Название сервиса</strong> — произвольное, например <code>olcRTC subscription mirror</code>.</li><li><strong>Ссылка на сайт</strong> — домен вашего сервера или любой URL.</li><li><strong>Redirect URI</strong> — добавь <code>https://oauth.yandex.ru/verification_code</code>.</li><li><strong>Доступы (Яндекс Диск)</strong> — «Доступ к информации о Диске» и «Запись в любом месте на Диске». При проблемах также: «Чтение всего Диска», «Доступ к папке приложения на Диске».</li></ul></li><li>Нажми <strong>Создать приложение</strong>. Получишь ClientID вида <code>a1b2c3d4...</code>.</li></ol><p style="margin:0"><strong>Шаг 2. Получить OAuth-токен</strong></p><p style="margin:0;color:var(--muted)">Открой в браузере, подставив свой ClientID:</p><div class="fingerprint mono" style="margin:6px 0">https://oauth.yandex.ru/authorize?response_type=token&amp;client_id=&lt;CLIENTID&gt;</div><p style="margin:0;color:var(--muted)">Яндекс попросит разрешение на доступ к Диску. После согласия браузер перейдёт на <code>https://oauth.yandex.ru/verification_code#access_token=&lt;TOKEN&gt;</code>. Скопируй <code>&lt;TOKEN&gt;</code> из URL — это OAuth-токен для mirror.</p><p style="margin:0"><strong>Шаг 3. Вставить токен в панели</strong></p><p style="margin:0;color:var(--muted)">Вставь скопированный токен в поле <strong>OAuth token</strong> выше и нажми <strong>Сохранить Yandex settings</strong>. Токен хранится зашифрованно.</p></div></details>`)}
         ${settingsSection('instances-settings','Инстансы',`<form data-form="instance-settings" class="inline-form"><div class="field"><label>Максимум инстансов</label><input class="input" name="max_instances" type="number" min="1" max="1000" value="${s.instances.maximum}"></div><button class="btn btn-primary" type="submit">Сохранить</button></form>`)}
         ${settingsSection('interface','Интерфейс',`<form data-form="theme" class="inline-form"><div class="field"><label>Тема</label><select class="select" name="theme"><option value="dark" ${s.interface.theme==='dark'?'selected':''}>Тёмная</option><option value="light" ${s.interface.theme==='light'?'selected':''}>Светлая</option></select></div><button class="btn btn-primary" type="submit">Применить</button></form>`)}
@@ -560,14 +629,16 @@ app.addEventListener('click', async event => {
     if (action === 'check-updates') await checkUpdates();
     if (action === 'install-update') await installUpdate(target.dataset.bundle || '');
     if (action === 'rollback-update') { if(confirm('Выполнить rollback на предыдущий bundle?')){state.updateOperation=await api('/api/v1/updates/rollback',{method:'POST'});refreshSettingsOperationViews();toast('Rollback запущен');} }
-    if (action === 'wb-install') { state.wbOperation=await api('/api/v1/wb/components/install',{method:'POST'});refreshSettingsOperationViews();toast('Установка WB components запущена'); }
-    if (action === 'wb-remove') { if(confirm('Удалить WB components и browser profile?')){state.wbOperation=await api('/api/v1/wb/components/remove',{method:'POST'});refreshSettingsOperationViews();toast('Удаление WB components запущено');} }
-    if (action === 'wb-session-create') await runWBSession('create');
-    if (action === 'wb-playwright-refresh') await runWBSession('refresh');
+    if (action === 'wb-install') { state.wbOperation=await api('/api/v1/automation/components/install',{method:'POST'});refreshSettingsOperationViews();toast('Установка automation components запущена'); }
+    if (action === 'wb-remove') { if(confirm('Удалить automation components и browser profiles?')){state.wbOperation=await api('/api/v1/automation/components/remove',{method:'POST'});refreshSettingsOperationViews();toast('Удаление automation components запущено');} }
+    if (action === 'wb-session-create') await runAutomationSession('wbstream','create');
+    if (action === 'wb-playwright-refresh') await runAutomationSession('wbstream','refresh');
+    if (action === 'telemost-session-create') await runAutomationSession('telemost','create');
     if (action === 'wb-token') openWBTokenModal();
     if (action === 'wb-fill-instance') await fillWBInstanceForm();
     if (action === 'telemost-fill-instance') await fillTelemostInstanceForm();
-    if (action === 'wb-profile-reset') { if (confirm('Очистить Chromium профиль WB? Сохранённые cookie и активная сессия будут удалены — при следующем запуске Playwright потребуется войти в WB заново.')) { await api('/api/v1/wb/profile/reset', {method:'POST'}); toast('Профиль очищен', 'При следующем запуске Playwright потребуется войти в WB заново.'); if (state.page === 'settings') { stopPolling(); await loadSettings(); } } }
+    if (action === 'wb-profile-reset') await resetAutomationProfile('wbstream','WB Stream');
+    if (action === 'telemost-profile-reset') await resetAutomationProfile('telemost','Telemost');
     if (action === 'generate-jitsi-room') { const form=document.querySelector('form[data-form="instance"]');if(form){const bytes=new Uint8Array(10);crypto.getRandomValues(bytes);const name=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');form.elements.provider.value='jitsi';form.elements.room_id.value=`https://meet.jit.si/olc-${name}`;} }
     if (action === 'refresh-logs') await refreshLogs();
     if (action === 'toggle-logs') { state.logsPaused=!state.logsPaused; stopPolling(); renderLogsPage(document.querySelector('#log-output')?.textContent || ''); }
@@ -600,8 +671,8 @@ app.addEventListener('submit', async event => {
     if (form.dataset.form === 'yandex') { const d=new FormData(form);await api('/api/v1/settings',{method:'PUT',body:JSON.stringify({yandex_enabled:d.has('yandex_enabled'),yandex_base_path:d.get('yandex_base_path'),yandex_oauth_token:d.get('yandex_oauth_token'),clear_yandex_token:d.has('clear_yandex_token')})});await loadSettings();toast('Yandex settings сохранены'); }
     if (form.dataset.form === 'instance-settings') { const d=new FormData(form);await api('/api/v1/settings',{method:'PUT',body:JSON.stringify({max_instances:Number(d.get('max_instances'))})});await loadSettings();toast('Лимит сохранён'); }
     if (form.dataset.form === 'theme') { const d=new FormData(form);const theme=d.get('theme');await api('/api/v1/settings',{method:'PUT',body:JSON.stringify({theme})});applyTheme(theme);localStorage.setItem('olcrtc-theme',theme);toast('Тема применена'); }
-    if (form.dataset.form === 'https-settings') { const d=new FormData(form);await api('/api/v1/settings',{method:'PUT',body:JSON.stringify({public_ip:d.get('public_ip'),public_port:Number(d.get('public_port'))})});await loadSettings();toast('HTTPS settings сохранены','Перезапустите panel при смене порта.'); }
-    if (form.dataset.form === 'wb-token') { const d=new FormData(form);const result=await api('/api/v1/wb/token/refresh',{method:'POST',body:JSON.stringify({token:d.get('token')})});closeModal();toast('WB token обновлён',wbApplySummary(result));if(state.page==='settings'){stopPolling();await loadSettings();}else if(state.page==='instances'){await loadInstances();} }
+    if (form.dataset.form === 'https-settings') { const d=new FormData(form);const before=state.settings?.https||{};const payload={public_ip:d.get('public_ip'),public_port:Number(d.get('public_port')),public_origin:d.get('public_origin').trim(),panel_path:d.get('panel_path'),subscription_path:d.get('subscription_path')};const linksChanged=payload.public_origin!==before.public_origin||payload.panel_path!==before.panel_path||payload.subscription_path!==before.subscription_path;if(linksChanged&&!confirm('Изменение публичного origin или путей потребует перезапуска. Старые закладки, ссылки и QR-коды перестанут указывать на новый адрес. Сохранить?'))return;await api('/api/v1/settings',{method:'PUT',body:JSON.stringify(payload)});await loadSettings();toast('HTTPS settings сохранены',linksChanged?'Перезапустите panel service, чтобы применить новые URL.':'Перезапустите panel при смене порта.'); }
+    if (form.dataset.form === 'wb-token') { const d=new FormData(form);const result=await api('/api/v1/automation/wbstream/token/refresh',{method:'POST',body:JSON.stringify({token:d.get('token')})});closeModal();toast('WB token обновлён',wbApplySummary(result));if(state.page==='settings'){stopPolling();await loadSettings();}else if(state.page==='instances'){await loadInstances();} }
   } catch (error) { toast('Ошибка формы', error.message, 'error'); }
   finally { if (submit && document.body.contains(submit)) submit.disabled = false; }
 });
@@ -609,6 +680,7 @@ app.addEventListener('submit', async event => {
 app.addEventListener('input', event => {
   if (event.target.dataset.filter) { state.instanceFilters[event.target.dataset.filter]=event.target.value;renderInstances(); }
   if (event.target.dataset.role === 'logs-search') refreshLogs();
+  if (event.target.closest('form[data-form="https-settings"]')) updatePublicURLPreview(event.target.form);
 });
 
 app.addEventListener('change', event => {
@@ -641,7 +713,7 @@ async function handleInstanceAction(action, target) {
 
 async function showInstanceQR(id,format){
   const result=await api(`/api/v1/instances/${id}/uri?format=${format}`);
-  const src=`/api/v1/instances/${id}/qr?format=${format}`;
+  const src=panelURL(`/api/v1/instances/${id}/qr?format=${format}`);
   const warning=format==='client'&&result.uri.includes('&a=')?'Этот QR содержит полный WB auth token и является credential.':'';
   const appLink=format==='client'?'https://github.com/Oleglog/Olcrtc_client':'https://github.com/alananisimov/olcbox';
   openQRPayloadModal(format==='client'?'QR OLCRTC Client':'QR OLCBOX',src,result.uri,format==='client'?maskClientURI:value=>value,warning,appLink);
@@ -655,7 +727,7 @@ async function showSubscriptionQR(slug,format='client'){
     catch(error){warning=`Yandex mirror не удалось обновить: ${error.message}. QR использует прямой URL и последнее подтверждённое состояние mirror.`;}
   }
   const result=await api(`/api/v1/subscriptions/${encodeURIComponent(slug)}/payload?format=${format}`);
-  const src=`/api/v1/subscriptions/${encodeURIComponent(slug)}/qr?format=${format}`;
+  const src=panelURL(`/api/v1/subscriptions/${encodeURIComponent(slug)}/qr?format=${format}`);
   if(format==='olcbox')warning='QR содержит bearer-secret URL OLCBOX. Он загружает plain-text sub.md с обычными olcrtc:// URI.';
   const appLink=format==='client'?'https://github.com/Oleglog/Olcrtc_client':'https://github.com/alananisimov/olcbox';
   openQRPayloadModal(format==='olcbox'?'QR подписки OLCBOX':'QR подписки OLCRTC Client',src,result.payload,format==='olcbox'?value=>value:maskSubscriptionBundle,warning,appLink);
@@ -682,36 +754,45 @@ function openWBTokenModal(){openModal('Обновить общий WB token вр
 
 async function fillWBInstanceForm(){
   const form=document.querySelector('form[data-form="instance"]');if(!form)return;
-  const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action:'create',provider:'wbstream'})});window.open(session.novnc_url,'olcrtc-wb-novnc','noopener');toast('WB-сессия запущена','Войдите в WB Stream и пройдите CAPTCHA.');
-  const current=await waitForWBSession();const room=current.state?.room_id||'',token=current.state?.token||'';if(!token)throw new Error('WB token не получен из успешной Playwright-сессии');if(room)form.elements.room_id.value=room;form.elements.auth_token.value=token;form.elements.provider.value='wbstream';syncInstanceFormFields(form);toast('WB данные получены',`Room ID и WB account token заполнены. ${wbApplySummary(current.state?.applied)}`);
+  const session=await api('/api/v1/automation/wbstream/session',{method:'POST',body:JSON.stringify({action:'create'})});window.open(session.novnc_url,'olcrtc-wb-novnc','noopener');toast('WB-сессия запущена','Войдите в WB Stream и пройдите CAPTCHA.');
+  const current=await waitForAutomationSession('wbstream');const room=current.state?.room_id||'',token=current.state?.token||'';if(!token)throw new Error('WB token не получен из успешной Playwright-сессии');if(room)form.elements.room_id.value=room;form.elements.auth_token.value=token;form.elements.provider.value='wbstream';syncInstanceFormFields(form);toast('WB данные получены',`Room ID и WB account token заполнены. ${wbApplySummary(current.state?.applied)}`);
 }
 
 async function fillTelemostInstanceForm(){
   const form=document.querySelector('form[data-form="instance"]');if(!form)return;
-  const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action:'create',provider:'telemost'})});window.open(session.novnc_url,'olcrtc-telemost-novnc','noopener');toast('Telemost-сессия запущена','Если Яндекс запросит вход, завершите его через noVNC.');
-  const current=await waitForWBSession(()=>{},'Telemost');const room=normalizeRoomID('telemost',current.state?.room_id||'');if(!room)throw new Error('Room ID не получен из успешной Telemost-сессии');form.elements.provider.value='telemost';form.elements.transport.value='vp8channel';form.elements.room_id.value=room;form.elements.auth_token.value='';syncInstanceFormFields(form);toast('Комната Telemost создана',`Room ID ${room} подставлен в форму инстанса.`);
+  const session=await api('/api/v1/automation/telemost/session',{method:'POST',body:JSON.stringify({action:'create'})});window.open(session.novnc_url,'olcrtc-telemost-novnc','noopener');toast('Telemost-сессия запущена','Если Яндекс запросит вход, завершите его через noVNC.');
+  const current=await waitForAutomationSession('telemost');const room=normalizeRoomID('telemost',current.state?.room_id||'');if(!room)throw new Error('Room ID не получен из успешной Telemost-сессии');form.elements.provider.value='telemost';form.elements.transport.value='vp8channel';form.elements.room_id.value=room;form.elements.auth_token.value='';syncInstanceFormFields(form);toast('Комната Telemost создана',`Room ID ${room} подставлен в форму инстанса.`);
 }
 
-async function runWBSession(action){
-  const session=await api('/api/v1/wb/session',{method:'POST',body:JSON.stringify({action,provider:'wbstream'})});
-  window.open(session.novnc_url,'olcrtc-wb-novnc','noopener');
-  openModal(action==='create'?'Playwright: создать WB комнату':'Playwright: обновить WB token',`<div class="notice info">Сессия активна до ${formatDate(session.expires_at)}. Выполните login/CAPTCHA в noVNC.</div><div class="form-actions"><a class="btn btn-primary" href="${attr(session.novnc_url)}" target="_blank" rel="noopener">Открыть noVNC</a></div><div class="operation-card running" id="wb-session-state">Ожидание Chromium...</div>`);
-  const current=await waitForWBSession(statePayload=>{const root=document.querySelector('#wb-session-state');if(root)root.textContent=`${statePayload.message||statePayload.phase||'Ожидание'} · ${statePayload.percent||0}%`;});
-  const root=document.querySelector('#wb-session-state');if(root){root.className='operation-card completed';root.textContent=`Готово. ${wbApplySummary(current.state?.applied)}`;}
-  toast('WB token получен через Playwright',wbApplySummary(current.state?.applied));
+async function runAutomationSession(provider,action){
+  const session=await api(`/api/v1/automation/${provider}/session`,{method:'POST',body:JSON.stringify({action})});
+  window.open(session.novnc_url,provider==='telemost'?'olcrtc-telemost-novnc':'olcrtc-wb-novnc','noopener');
+  const title=provider==='telemost'?'Playwright: создать комнату Telemost':action==='create'?'Playwright: создать WB комнату':'Playwright: обновить WB token';
+  openModal(title,`<div class="notice info">Сессия активна до ${formatDate(session.expires_at)}. Выполните login/CAPTCHA в noVNC.</div><div class="form-actions"><a class="btn btn-primary" href="${attr(session.novnc_url)}" target="_blank" rel="noopener">Открыть noVNC</a></div><div class="operation-card running" id="automation-session-state">Ожидание Chromium...</div>`);
+  const current=await waitForAutomationSession(provider,statePayload=>{const root=document.querySelector('#automation-session-state');if(root)root.textContent=`${statePayload.message||statePayload.phase||'Ожидание'} · ${statePayload.percent||0}%`;});
+  const root=document.querySelector('#automation-session-state');if(root){root.className='operation-card completed';root.textContent=provider==='telemost'?'Комната Telemost создана.':`Готово. ${wbApplySummary(current.state?.applied)}`;}
+  toast(provider==='telemost'?'Комната Telemost создана':'WB token получен через Playwright',provider==='telemost'?(current.state?.room_id||''):wbApplySummary(current.state?.applied));
   if(state.page==='settings'){stopPolling();await loadSettings();}else if(state.page==='instances'){await loadInstances();}
   return current;
 }
 
-async function waitForWBSession(onProgress=()=>{},label='WB'){
+async function waitForAutomationSession(provider,onProgress=()=>{}){
+  const label=provider==='telemost'?'Telemost':'WB';
   for(let attempt=0;attempt<450;attempt++){
     await new Promise(resolve=>setTimeout(resolve,2000));
-    const current=await api('/api/v1/wb/session');const worker=current.state||{};onProgress(worker);
+    const current=await api(`/api/v1/automation/${provider}/session`);const worker=current.state||{};onProgress(worker);
     if(worker.phase==='success')return current;
     if(worker.phase==='error')throw new Error(worker.message||`${label} automation завершилась с ошибкой`);
     if(!current.active)throw new Error(`Время ${label}-сессии истекло`);
   }
   throw new Error(`${label} automation не завершилась вовремя`);
+}
+
+async function resetAutomationProfile(provider,label){
+  if(!confirm(`Очистить Chromium профиль ${label}? Сохранённые cookie и активная сессия этого provider будут удалены. При следующем запуске Playwright потребуется войти заново.`))return;
+  await api(`/api/v1/automation/${provider}/profile/reset`,{method:'POST'});
+  toast(`Профиль ${label} очищен`,'Профиль другого provider сохранён.');
+  if(state.page==='settings'){stopPolling();await loadSettings();}
 }
 
 function wbApplySummary(result={}){const updated=result?.updated?.length||0,subscriptions=result?.subscriptions_updated?.length||0,mirrors=result?.mirrors_scheduled?.length||0;const failed=Object.entries(result?.failed||{});return `Обновлено WB-инстансов: ${updated}; подписок: ${subscriptions}; mirrors запланировано: ${mirrors}${failed.length?`. Ошибки: ${failed.map(([id,message])=>`#${id} ${message}`).join('; ')}`:'. Ошибок нет.'}`;}
@@ -731,7 +812,7 @@ function clientQRUnavailable(item){const supported=(item.provider==='wbstream'||
 function quotaLabel(item){if(item.expires_at&&new Date(item.expires_at)<new Date())return '<span class="chip red">expired</span>';if(item.quota_bytes&&item.total_bytes>=item.quota_bytes)return '<span class="chip red">exceeded</span>';return item.quota_bytes?`${formatBytes(item.quota_bytes)}`:'∞';}
 function statusLabel(value){return ({running:'Запущен',stopped:'Остановлен',starting:'Запуск',stopping:'Остановка',failed:'Ошибка',updating:'Обновление',unknown:'Неизвестно'})[value]||value;}
 function formatBytes(value=0){const units=['Б','КБ','МБ','ГБ','ТБ','ПБ'];let n=Number(value)||0,i=0;while(n>=1024&&i<units.length-1){n/=1024;i++;}return `${i? n.toFixed(n>=100?0:n>=10?1:2):Math.round(n)} ${units[i]}`;}
-function formatUptime(seconds=0){seconds=Math.max(0,Math.floor(seconds||0));const d=Math.floor(seconds/86400),h=Math.floor(seconds%86400/3600),m=Math.floor(seconds%3600/60);return d?`${d}д ${h}ч`:h?`${h}ч ${m}м`:`${m}м`;}
+function formatUptime(seconds=0){seconds=Math.max(0,Math.floor(seconds||0));const d=Math.floor(seconds/86400),h=Math.floor(seconds%86400/3600),m=Math.floor(seconds%3600/60),s=seconds%60;return d?`${d}д ${h}ч`:h?`${h}ч ${m}м`:`${m}м ${String(s).padStart(2,'0')}с`;}
 function formatDate(value){try{return new Intl.DateTimeFormat('ru',{dateStyle:'medium',timeStyle:'short'}).format(new Date(value));}catch{return '—';}}
 function localDateTime(value){const d=new Date(value);const pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;}
 function shortSHA(value=''){return value?`<span class="mono" title="${attr(value)}">${esc(value.slice(0,12))}</span>`:'—';}
@@ -743,10 +824,21 @@ function plural(n,one,few,many){const x=Math.abs(n)%100,y=x%10;return x>10&&x<20
 function esc(value){return String(value ?? '').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));}
 function attr(value){return esc(value).replace(/`/g,'&#96;');}
 function applyTheme(theme){document.documentElement.dataset.theme=theme==='light'?'light':'dark';}
-function stopPolling(){if(state.poller){clearInterval(state.poller);state.poller=null;}}
+function stopPolling(){if(state.poller){clearInterval(state.poller);state.poller=null;}if(state.uptimeTicker){clearInterval(state.uptimeTicker);state.uptimeTicker=null;}}
 async function copyText(value){if(navigator.clipboard?.writeText)return navigator.clipboard.writeText(value);const area=document.createElement('textarea');area.value=value;document.body.append(area);area.select();document.execCommand('copy');area.remove();}
-async function downloadAuthenticated(url,filename){const response=await fetch(url,{credentials:'same-origin'});if(!response.ok)throw new Error('Не удалось скачать файл');const blob=await response.blob();const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);}
+async function downloadAuthenticated(url,filename){const response=await fetch(panelURL(url),{credentials:'same-origin'});if(!response.ok)throw new Error('Не удалось скачать файл');const blob=await response.blob();const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);}
 function importSubscriptions(){const input=document.createElement('input');input.type='file';input.accept='application/json,.json';input.onchange=async()=>{try{const text=await input.files[0].text();const payload=JSON.parse(text);const result=await api('/api/v1/subscriptions/import',{method:'POST',body:JSON.stringify(payload)});await loadSubscriptions();toast('Импорт завершён',`Создано: ${result.created}`);}catch(error){toast('Ошибка импорта',error.message,'error');}};input.click();}
+
+function updatePublicURLPreview(form) {
+  const preview=form?.querySelector('[data-role="public-url-preview"]');if(!preview)return;
+  const explicit=form.elements.public_origin.value.trim().replace(/\/$/,'');
+  let host=form.elements.public_ip.value.trim()||'127.0.0.1';
+  if(host.includes(':')&&!host.startsWith('['))host=`[${host}]`;
+  const origin=explicit||`https://${host}:${form.elements.public_port.value||8443}`;
+  const panelPath=form.elements.panel_path.value||'/';
+  const subscriptionPath=form.elements.subscription_path.value||'/sub';
+  preview.innerHTML=`Панель: ${esc(origin+panelPath)}<br>Подписка: ${esc(origin+subscriptionPath+'/example-slug')}`;
+}
 
 async function refreshSettingsOperations(){
   if(state.page!=='settings'||state.settingsPolling)return;
@@ -754,7 +846,7 @@ async function refreshSettingsOperations(){
   const previousWB=state.wbOperation?.state,previousUpdate=state.updateOperation?.state;
   try{
     const [wbOperation,updateOperation]=await Promise.all([
-      api('/api/v1/wb/components/progress').catch(()=>null),
+      api('/api/v1/automation/components/progress').catch(()=>null),
       api('/api/v1/updates/progress').catch(()=>null),
     ]);
     if(wbOperation)state.wbOperation=wbOperation;
@@ -779,7 +871,7 @@ function refreshSettingsOperationViews(){
   const updateRunning=state.updateOperation?.state==='running';
   const wbRunning=state.wbOperation?.state==='running';
   const updateRoot=document.querySelector('#update-operation');if(updateRoot)updateRoot.innerHTML=operationProgressHTML(state.updateOperation,'Обновление');
-  const wbRoot=document.querySelector('#wb-operation');if(wbRoot)wbRoot.innerHTML=operationProgressHTML(state.wbOperation,'WB components');
+  const wbRoot=document.querySelector('#wb-operation');if(wbRoot)wbRoot.innerHTML=operationProgressHTML(state.wbOperation,'Automation components');
   const releasesRoot=document.querySelector('#release-list');if(releasesRoot)releasesRoot.innerHTML=releaseCatalogHTML(state.releases||{configured:false,items:[]},updateRunning);
   const latest=state.releases?.items?.length?[...state.releases.items].sort((a,b)=>new Date(b.published_at)-new Date(a.published_at))[0]:null;
   const checkButton=document.querySelector('[data-action="check-updates"]');if(checkButton)checkButton.disabled=updateRunning;
