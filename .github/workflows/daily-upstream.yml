@@ -4,8 +4,12 @@ on:
   push:
     branches:
       - master
-  schedule:
-    - cron: '17 3 * * *'
+  # Temporarily disabled automatic daily builds
+  # Reason: Fix handshake protocol version incompatibility (v2/v3)
+  # Date: 2026-08-15
+  # TODO: Re-enable after verifying upstream compatibility
+  # schedule:
+  #   - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -19,7 +23,13 @@ jobs:
       - uses: actions/checkout@v7
         with: { path: panel }
       - name: Clone immutable upstream master
-        run: git clone --depth 1 --recurse-submodules --branch master https://github.com/openlibrecommunity/olcrtc.git upstream
+        run: |
+          # Pin to verified commit compatible with client v0.0.0-20260811121518-3339cd367168
+          # This commit uses handshake ProtoVersion = 2
+          git clone --recurse-submodules --branch master https://github.com/openlibrecommunity/olcrtc.git upstream
+          cd upstream
+          git checkout 3339cd367168ca4da8b3bcb6af3e20a3c1d6fa6f || git checkout 3339cd367168
+          cd ..
       - uses: actions/setup-go@v7
         with:
           go-version: '1.26.3'
@@ -109,7 +119,7 @@ jobs:
         run: |
           panel_short=${GITHUB_SHA:0:8}
           bundle="bundle-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.short }}-${panel_short}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-          panel_version="0.3.0"
+          panel_version="0.3.0-hotfix-v2compat"
           jq -n \
             --arg bundle "$bundle" --arg version "$panel_version" --arg sha "${{ steps.upstream.outputs.sha }}" \
             --arg commit_time "${{ steps.upstream.outputs.commit_time }}" --arg build_time "$(date -u +%FT%TZ)" --arg goversion "$(go version | awk '{print $3}')" \
