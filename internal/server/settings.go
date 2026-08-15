@@ -862,27 +862,27 @@ func normalizeAutomationProxy(mode, address, username string) (automationProxySe
 	}
 	allowed := map[string]bool{"direct": true, "http": true, "https": true, "socks5": true}
 	if !allowed[settings.Mode] {
-		return automationProxySettings{}, errors.New("Неизвестный режим proxy")
+		return automationProxySettings{}, errors.New("неизвестный режим proxy")
 	}
 	if len(settings.Username) > 256 || strings.ContainsAny(settings.Username, "\r\n") {
-		return automationProxySettings{}, errors.New("Proxy username слишком длинный или содержит перевод строки")
+		return automationProxySettings{}, errors.New("proxy username слишком длинный или содержит перевод строки")
 	}
 	if settings.Mode == "direct" {
 		return settings, nil
 	}
 	if settings.Address == "" {
-		return automationProxySettings{}, errors.New("Укажите proxy в формате host:port")
+		return automationProxySettings{}, errors.New("укажите proxy в формате host:port")
 	}
 	if len(settings.Address) > 512 || strings.ContainsAny(settings.Address, " \t\r\n") || strings.Contains(settings.Address, "://") {
-		return automationProxySettings{}, errors.New("Proxy address должен иметь формат host:port без схемы и пробелов")
+		return automationProxySettings{}, errors.New("proxy address должен иметь формат host:port без схемы и пробелов")
 	}
 	parsed, err := url.Parse(settings.Mode + "://" + settings.Address)
 	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return automationProxySettings{}, errors.New("Proxy address должен иметь формат host:port")
+		return automationProxySettings{}, errors.New("proxy address должен иметь формат host:port")
 	}
 	port, err := strconv.Atoi(parsed.Port())
 	if err != nil || port < 1 || port > 65535 {
-		return automationProxySettings{}, errors.New("Proxy port должен быть в диапазоне 1..65535")
+		return automationProxySettings{}, errors.New("proxy port должен быть в диапазоне 1..65535")
 	}
 	return settings, nil
 }
