@@ -584,6 +584,46 @@ func TestAutomationCanonicalAndLegacyRoutes(t *testing.T) {
 	}
 }
 
+func TestAutomationProxySettingsSupportAuthentication(t *testing.T) {
+	p := newTestPanel(t)
+	csrf := loginTestPanel(t, p)
+	resp := p.request(t, http.MethodPut, "/api/v1/automation/settings", map[string]any{
+		"proxy_mode":     "socks5",
+		"proxy_address":  "proxy.example:1080",
+		"proxy_username": "proxy-user",
+		"proxy_password": "proxy-secret",
+	}, csrf)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy settings status=%d", resp.StatusCode)
+	}
+	var saved struct {
+		Mode        string `json:"proxy_mode"`
+		Address     string `json:"proxy_address"`
+		Username    string `json:"proxy_username"`
+		PasswordSet bool   `json:"proxy_password_set"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Mode != "socks5" || saved.Address != "proxy.example:1080" || saved.Username != "proxy-user" || !saved.PasswordSet {
+		t.Fatalf("unexpected proxy response: %#v", saved)
+	}
+	ciphertext, encrypted, err := p.store.Setting(context.Background(), "wb_proxy_password")
+	if err != nil || !encrypted || ciphertext == "proxy-secret" {
+		t.Fatalf("proxy password was not stored encrypted: encrypted=%v value=%q err=%v", encrypted, ciphertext, err)
+	}
+
+	invalid := p.request(t, http.MethodPut, "/api/v1/automation/settings", map[string]any{
+		"proxy_mode":    "http",
+		"proxy_address": "http://proxy.example:8080",
+	}, csrf)
+	defer invalid.Body.Close()
+	if invalid.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid proxy status=%d", invalid.StatusCode)
+	}
+}
+
 func TestAutomationProviderProfilesAreIsolated(t *testing.T) {
 	if wb, telemost := automationProfileDir(automationWBProvider), automationProfileDir(automationTeleProvider); wb == telemost {
 		t.Fatalf("provider profiles share path %q", wb)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,6 +68,148 @@ func TestWBWorkerLoadsPinnedPlaywrightAndReadsAuthorization(t *testing.T) {
 	}
 	if strings.Contains(source, "request.headerValue('authorization')") {
 		t.Fatal("worker uses asynchronous header lookup inside an unawaited Playwright event callback")
+	}
+}
+
+func TestWBWorkerUsesProxyCredentialsAndReducesAutomationSignals(t *testing.T) {
+	b, err := fs.ReadFile(files, "files/wb/worker.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(b)
+	for _, required := range []string{
+		"username: job.proxy.username",
+		"password: job.proxy.password",
+		"ignoreDefaultArgs: ['--enable-automation']",
+		"--disable-blink-features=AutomationControlled",
+		"Object.defineProperty(navigator, 'webdriver'",
+		"locale: 'ru-RU'",
+		"timezoneId: 'Europe/Moscow'",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("WB worker is missing %q", required)
+		}
+	}
+}
+
+func TestWBWorkerBridgesAuthenticatedSOCKS5(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not available")
+	}
+	b, err := fs.ReadFile(files, "files/wb/worker.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(b)
+	start := strings.Index(source, "function createSocketReader")
+	end := strings.Index(source, "function writeState")
+	if start < 0 || end <= start {
+		t.Fatal("SOCKS5 bridge helpers were not found in worker")
+	}
+
+	harness := `
+const net = require('node:net');
+` + source[start:end] + `
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+async function listen(server) {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  return server.address().port;
+}
+
+async function closeServer(server) {
+  if (!server.listening) return;
+  await new Promise(resolve => server.close(resolve));
+}
+
+async function testBridge() {
+  let upstreamFailure;
+  const upstream = net.createServer(socket => {
+    socket.on('error', () => {});
+    void (async () => {
+      const reader = createSocketReader(socket);
+      const greeting = await reader.read(4);
+      assert(greeting.equals(Buffer.from([0x05, 0x02, 0x02, 0x00])), 'unexpected upstream greeting');
+      socket.write(Buffer.from([0x05, 0x02]));
+
+      const authHeader = await reader.read(2);
+      assert(authHeader[0] === 0x01, 'unexpected auth version');
+      const username = (await reader.read(authHeader[1])).toString('utf8');
+      const passwordLength = await reader.read(1);
+      const password = (await reader.read(passwordLength[0])).toString('utf8');
+      assert(username === 'proxy-user' && password === 'proxy-secret', 'proxy credentials were not relayed');
+      socket.write(Buffer.from([0x01, 0x00]));
+
+      const requestHeader = await reader.read(4);
+      assert(requestHeader[0] === 0x05 && requestHeader[1] === 0x01, 'unexpected CONNECT request');
+      await readSocksAddress(reader, requestHeader[3]);
+      await reader.read(2);
+      socket.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x01, 0xbb]));
+
+      const remainder = reader.release();
+      if (remainder.length) socket.write(remainder);
+      socket.on('data', chunk => socket.write(chunk));
+      socket.resume();
+    })().catch(error => {
+      upstreamFailure = error;
+      socket.destroy();
+    });
+  });
+
+  const upstreamPort = await listen(upstream);
+  let bridge;
+  let client;
+  try {
+    bridge = await createAuthenticatedSocks5Bridge({
+      server: ` + "`" + `socks5://127.0.0.1:${upstreamPort}` + "`" + `,
+      username: 'proxy-user',
+      password: 'proxy-secret',
+    });
+    const bridgeURL = new URL(bridge.proxy.server);
+    client = await connectTCP(bridgeURL.hostname, Number(bridgeURL.port));
+    const reader = createSocketReader(client);
+    client.write(Buffer.from([0x05, 0x01, 0x00]));
+    assert((await reader.read(2)).equals(Buffer.from([0x05, 0x00])), 'bridge rejected no-auth client');
+
+    const domain = Buffer.from('stream.wb.ru', 'utf8');
+    client.write(Buffer.concat([
+      Buffer.from([0x05, 0x01, 0x00, 0x03, domain.length]), domain,
+      Buffer.from([0x01, 0xbb]),
+    ]));
+    const responseHeader = await reader.read(4);
+    assert(responseHeader[0] === 0x05 && responseHeader[1] === 0x00, 'bridge CONNECT failed');
+    await readSocksAddress(reader, responseHeader[3]);
+    await reader.read(2);
+
+    client.write(Buffer.from('ping'));
+    assert((await reader.read(4)).toString('utf8') === 'ping', 'bridge did not relay tunnel data');
+    if (upstreamFailure) throw upstreamFailure;
+  } finally {
+    client?.destroy();
+    await bridge?.close();
+    await closeServer(upstream);
+  }
+}
+
+testBridge().catch(error => {
+  console.error(error.stack || error);
+  process.exitCode = 1;
+});
+`
+
+	harnessPath := filepath.Join(t.TempDir(), "socks5-bridge-test.cjs")
+	if err := os.WriteFile(harnessPath, []byte(harness), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(node, harnessPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("SOCKS5 bridge protocol test failed: %v\n%s", err, output)
 	}
 }
 

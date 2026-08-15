@@ -122,3 +122,50 @@ func TestTelemostCreateSessionNeverExposesStoredWBToken(t *testing.T) {
 		t.Fatal("Telemost create session was allowed to expose the stored WB token")
 	}
 }
+
+func TestNormalizeAutomationProxy(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		mode     string
+		address  string
+		username string
+		wantMode string
+		wantAddr string
+	}{
+		{name: "direct", mode: " direct ", wantMode: "direct"},
+		{name: "http", mode: "HTTP", address: "proxy.example:8080", username: " user ", wantMode: "http", wantAddr: "proxy.example:8080"},
+		{name: "socks IPv4", mode: "socks5", address: "127.0.0.1:1080", wantMode: "socks5", wantAddr: "127.0.0.1:1080"},
+		{name: "socks IPv6", mode: "socks5", address: "[2001:db8::1]:1080", wantMode: "socks5", wantAddr: "[2001:db8::1]:1080"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeAutomationProxy(test.mode, test.address, test.username)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Mode != test.wantMode || got.Address != test.wantAddr {
+				t.Fatalf("proxy = %#v", got)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name     string
+		mode     string
+		address  string
+		username string
+	}{
+		{name: "unknown mode", mode: "ftp", address: "proxy.example:21"},
+		{name: "missing address", mode: "http"},
+		{name: "embedded scheme", mode: "http", address: "http://proxy.example:8080"},
+		{name: "missing port", mode: "https", address: "proxy.example"},
+		{name: "invalid port", mode: "socks5", address: "proxy.example:70000"},
+		{name: "path", mode: "http", address: "proxy.example:8080/path"},
+		{name: "username newline", mode: "http", address: "proxy.example:8080", username: "user\nname"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := normalizeAutomationProxy(test.mode, test.address, test.username); err == nil {
+				t.Fatal("invalid proxy was accepted")
+			}
+		})
+	}
+}

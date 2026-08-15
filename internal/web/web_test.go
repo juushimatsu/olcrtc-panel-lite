@@ -83,6 +83,28 @@ func TestWBSettingsActionsWrapWithinSection(t *testing.T) {
 	}
 }
 
+func TestAutomationUIExposesBrowserProxyAndSessionStop(t *testing.T) {
+	app, err := fs.ReadFile(Static, "static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(app)
+	for _, required := range []string{
+		`data-form="automation-proxy"`,
+		`name="proxy_mode"`,
+		"proxy_username",
+		"proxy_password",
+		"/api/v1/automation/settings",
+		`data-action="automation-session-stop"`,
+		"function stopAutomationSession",
+		"Остановить браузер",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("automation UI is missing %q", required)
+		}
+	}
+}
+
 func TestTelemostRoomInputIsNormalized(t *testing.T) {
 	app, err := fs.ReadFile(Static, "static/app.js")
 	if err != nil {

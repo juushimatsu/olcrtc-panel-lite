@@ -12,6 +12,8 @@ const state = {
   subscriptions: [],
   settings: null,
   releases: null,
+  automationSettings: { proxy_mode: 'direct', proxy_address: '', proxy_username: '', proxy_password_set: false },
+  automationSession: { active: false, provider: 'wbstream', state: {} },
   wbOperation: { state: 'idle', percent: 0 },
   updateOperation: { state: 'idle', percent: 0 },
   updateNoticeCatalog: null,
@@ -524,12 +526,16 @@ function openEntryForm(slug) {
 }
 
 async function loadSettings() {
-  const [settings, wbOperation, updateOperation] = await Promise.all([
+  const [settings, automationSettings, automationSession, wbOperation, updateOperation] = await Promise.all([
     api('/api/v1/settings'),
+    api('/api/v1/automation/settings').catch(() => ({ proxy_mode: 'direct', proxy_address: '', proxy_username: '', proxy_password_set: false })),
+    api('/api/v1/wb/session').catch(() => ({ active: false, provider: 'wbstream', state: {} })),
     api('/api/v1/automation/components/progress').catch(() => ({ state: 'idle', percent: 0 })),
     api('/api/v1/updates/progress').catch(() => ({ state: 'idle', percent: 0 })),
   ]);
   state.settings = settings;
+  state.automationSettings = automationSettings;
+  state.automationSession = automationSession;
   state.releases = { configured: settings.updates.configured, items: [], loading: true };
   state.wbOperation = wbOperation;
   state.updateOperation = updateOperation;
@@ -554,13 +560,50 @@ function renderSettings() {
         ${settingsSection('security','Безопасность',`<form data-form="credentials" class="form-grid">${field('username','Новый логин',state.user || '')}${field('current_password','Текущий пароль','','password','Обязательно',true)}${field('new_password','Новый пароль','','password','Пусто = оставить текущий')}<div class="wide form-actions"><button class="btn" type="button" data-action="revoke-sessions">Завершить все сессии</button><button class="btn btn-primary" type="submit">Изменить credentials</button></div></form>`)}
         ${settingsSection('https','HTTPS и публичные URL',`<form data-form="https-settings"><div class="form-grid">${field('public_ip','Публичный IP',s.https.public_ip || '')}${field('public_port','HTTPS порт',s.https.port,'number')}${field('public_origin','Публичный HTTPS origin',s.https.public_origin || '','url','https://example.com')}${field('panel_path','Путь панели',s.https.panel_path || '/','text','/control-a8f3',true)}${field('subscription_path','Путь подписок',s.https.subscription_path || '/sub','text','/feeds-b19c',true)}</div><div class="notice info" data-role="public-url-preview" style="margin-top:14px">Панель: ${esc(s.https.panel_url || '')}<br>Подписка: ${esc((s.https.subscription_url || '') + '/example-slug')}</div>${s.https.restart_required ? '<div class="notice" style="margin-top:10px">Новые origin и пути сохранены, но ещё не активны. Перезапустите panel service. Старые ссылки и QR-коды после смены URL перестанут работать.</div>' : ''}<div class="form-actions"><a class="btn" href="${attr(panelURL('/ca.crt'))}" download>Скачать CA</a><button class="btn" type="button" data-action="regenerate-cert">Регенерировать leaf</button><button class="btn btn-primary" type="submit">Сохранить HTTPS и URL</button></div></form><p class="field-label">CA fingerprint</p><div class="fingerprint mono">${esc(s.https.ca_fingerprint || '')}</div><p class="field-label">Server fingerprint</p><div class="fingerprint mono">${esc(s.https.server_fingerprint || '')}</div><div class="notice" style="margin-top:14px">После смены порта или публичных URL перезапустите panel service. CA необходимо сверить с fingerprint из консоли VPS.</div>`)}
         ${settingsSection('updates','Обновления',`<div class="detail-list">${detail('Текущий bundle',currentRelease.bundle_id || 'не определён')}${detail('Версия панели',currentRelease.panel_version || s.updates.panel_version)}${detail('Upstream SHA',shortSHA(currentRelease.upstream_sha || s.updates.upstream_sha))}${detail('Release manifest',s.updates.configured ? 'Настроен' : 'Не задан')}</div><div class="form-actions"><button class="btn" data-action="check-updates" ${updateRunning ? 'disabled' : ''}>Обновить список</button><button class="btn btn-primary" data-action="install-update" ${updateRunning || !latestRelease || latestRelease.current ? 'disabled' : ''}>Обновить до последнего</button><button class="btn" data-action="rollback-update" ${updateRunning || !releases.rollback_available ? 'disabled' : ''}>Rollback</button></div><div id="update-operation">${operationProgressHTML(state.updateOperation, 'Обновление')}</div><div id="release-list">${releaseCatalogHTML(releases, updateRunning)}</div>`)}
-        ${settingsSection('automation','Автоматизация WB и Telemost',`<div class="detail-list">${detail('Платформа',s.wb.supported ? 'linux/amd64' : 'Не поддерживается')}${detail('Components',s.wb.installed ? 'Установлены' : 'Не установлены')}</div><div class="form-actions wb-actions"><button class="btn btn-primary" data-action="wb-install" ${!s.wb.supported || wbRunning ? 'disabled' : ''}>Установить components</button><button class="btn btn-danger" data-action="wb-remove" ${!s.wb.supported || wbRunning ? 'disabled' : ''}>Удалить components</button></div><div id="wb-operation">${operationProgressHTML(state.wbOperation, 'Automation components')}</div><section class="automation-provider"><h3>WB Stream</h3><div class="detail-list">${detail('Auth token',wbTokenStatus,s.wb.token_expired ? 'danger-text' : '')}</div><div class="notice info" style="margin-top:14px">Playwright использует отдельный постоянный Chromium profile WB Stream. Login и CAPTCHA выполняются вручную через авторизованный noVNC route.</div><div class="notice" style="margin-top:10px">WB auth token входит только в URI/QR OLCRTC Client и делает такой QR credential. QR OLCBOX token не содержит.</div><div class="form-actions wb-actions"><button class="btn" data-action="wb-session-create" ${!s.wb.installed ? 'disabled' : ''}>Playwright: создать комнату</button><button class="btn ${s.wb.token_expired ? 'btn-primary' : ''}" data-action="wb-playwright-refresh" ${!s.wb.installed ? 'disabled' : ''}>Playwright: обновить token</button><button class="btn" data-action="wb-token">Ввести token вручную (fallback)</button><button class="btn btn-danger" data-action="wb-profile-reset" ${!s.wb.installed ? 'disabled' : ''} title="Остановить сессию и очистить Chromium profile WB Stream">↺ Сбросить профиль (перезайти)</button></div></section><section class="automation-provider"><h3>Telemost</h3><div class="notice info">Playwright использует отдельный постоянный Chromium profile Telemost. Если Яндекс запросит вход, завершите его через noVNC.</div><div class="form-actions wb-actions"><button class="btn" data-action="telemost-session-create" ${!s.wb.installed ? 'disabled' : ''}>Playwright: создать комнату</button><button class="btn btn-danger" data-action="telemost-profile-reset" ${!s.wb.installed ? 'disabled' : ''} title="Остановить сессию и очистить Chromium profile Telemost">↺ Сбросить профиль (перезайти)</button></div></section>`)}
+        ${settingsSection('automation','Автоматизация WB и Telemost',automationSettingsHTML(s, wbRunning, wbTokenStatus))}
         ${settingsSection('yandex','Yandex encrypted mirror',`<form data-form="yandex"><div class="form-grid"><label class="checkbox"><input type="checkbox" name="yandex_enabled" ${s.yandex.enabled ? 'checked' : ''}> Включить глобально</label>${field('yandex_base_path','Base path',s.yandex.base_path || '/olcrtc/subscriptions')}${field('yandex_oauth_token','OAuth token','','password',s.yandex.token_set ? 'Token сохранён; пусто = не менять' : 'Введите token')}<label class="checkbox"><input type="checkbox" name="clear_yandex_token"> Удалить сохранённый token</label></div><div class="form-actions"><button class="btn btn-primary" type="submit">Сохранить Yandex settings</button></div></form><details style="margin-top:18px"><summary style="cursor:pointer;color:var(--muted);font-size:12px;font-weight:520">Инструкция: как получить Yandex OAuth-токен</summary><div style="margin-top:14px;display:grid;gap:12px;font-size:13px"><p style="margin:0"><strong>Шаг 1. Создать OAuth-приложение в Яндексе</strong></p><ol style="margin:0;padding-left:20px;color:var(--muted);line-height:1.7"><li>Открой <a href="https://oauth.yandex.ru/client/new" target="_blank" rel="noopener">oauth.yandex.ru/client/new</a> под аккаунтом, на Диск которого будет публиковаться mirror.</li><li>Заполни поля:<ul style="margin:6px 0"><li><strong>Название сервиса</strong> — произвольное, например <code>olcRTC subscription mirror</code>.</li><li><strong>Ссылка на сайт</strong> — домен вашего сервера или любой URL.</li><li><strong>Redirect URI</strong> — добавь <code>https://oauth.yandex.ru/verification_code</code>.</li><li><strong>Доступы (Яндекс Диск)</strong> — «Доступ к информации о Диске» и «Запись в любом месте на Диске». При проблемах также: «Чтение всего Диска», «Доступ к папке приложения на Диске».</li></ul></li><li>Нажми <strong>Создать приложение</strong>. Получишь ClientID вида <code>a1b2c3d4...</code>.</li></ol><p style="margin:0"><strong>Шаг 2. Получить OAuth-токен</strong></p><p style="margin:0;color:var(--muted)">Открой в браузере, подставив свой ClientID:</p><div class="fingerprint mono" style="margin:6px 0">https://oauth.yandex.ru/authorize?response_type=token&amp;client_id=&lt;CLIENTID&gt;</div><p style="margin:0;color:var(--muted)">Яндекс попросит разрешение на доступ к Диску. После согласия браузер перейдёт на <code>https://oauth.yandex.ru/verification_code#access_token=&lt;TOKEN&gt;</code>. Скопируй <code>&lt;TOKEN&gt;</code> из URL — это OAuth-токен для mirror.</p><p style="margin:0"><strong>Шаг 3. Вставить токен в панели</strong></p><p style="margin:0;color:var(--muted)">Вставь скопированный токен в поле <strong>OAuth token</strong> выше и нажми <strong>Сохранить Yandex settings</strong>. Токен хранится зашифрованно.</p></div></details>`)}
         ${settingsSection('instances-settings','Инстансы',`<form data-form="instance-settings" class="inline-form"><div class="field"><label>Максимум инстансов</label><input class="input" name="max_instances" type="number" min="1" max="1000" value="${s.instances.maximum}"></div><button class="btn btn-primary" type="submit">Сохранить</button></form>`)}
         ${settingsSection('interface','Интерфейс',`<form data-form="theme" class="inline-form"><div class="field"><label>Тема</label><select class="select" name="theme"><option value="dark" ${s.interface.theme==='dark'?'selected':''}>Тёмная</option><option value="light" ${s.interface.theme==='light'?'selected':''}>Светлая</option></select></div><button class="btn btn-primary" type="submit">Применить</button></form>`)}
         ${settingsSection('backup','Backup',`<p class="muted">Обычный UI backup содержит SQLite snapshot и redacted YAML. Master key, private TLS keys, key.hex и WB profile не включаются.</p><div class="form-actions"><button class="btn btn-primary" data-action="create-backup">Создать и скачать</button></div>`)}
       </div>
     </div></section>`;
+}
+
+function automationSettingsHTML(settings, componentsRunning, tokenStatus) {
+  const proxy = state.automationSettings || {};
+  const session = state.automationSession || {};
+  const sessionActive = Boolean(session.active);
+  const proxyMode = proxy.proxy_mode || 'direct';
+  return `
+    <div class="detail-list">${detail('Платформа',settings.wb.supported ? 'linux/amd64' : 'Не поддерживается')}${detail('Components',settings.wb.installed ? 'Установлены' : 'Не установлены')}</div>
+    <div class="form-actions wb-actions"><button class="btn btn-primary" data-action="wb-install" ${!settings.wb.supported || componentsRunning ? 'disabled' : ''}>Установить components</button><button class="btn btn-danger" data-action="wb-remove" ${!settings.wb.supported || componentsRunning ? 'disabled' : ''}>Удалить components</button></div>
+    <div id="wb-operation">${operationProgressHTML(state.wbOperation, 'Automation components')}</div>
+    <section class="automation-provider">
+      <h3>Browser proxy</h3>
+      <form data-form="automation-proxy">
+        <div class="form-grid">
+          <div class="field"><label for="f-proxy_mode">Режим</label><select class="select" id="f-proxy_mode" name="proxy_mode"><option value="direct" ${proxyMode === 'direct' ? 'selected' : ''}>Без proxy</option><option value="http" ${proxyMode === 'http' ? 'selected' : ''}>HTTP</option><option value="https" ${proxyMode === 'https' ? 'selected' : ''}>HTTPS</option><option value="socks5" ${proxyMode === 'socks5' ? 'selected' : ''}>SOCKS5</option></select></div>
+          ${field('proxy_address','Адрес proxy',proxy.proxy_address || '','text','host:port')}
+          ${field('proxy_username','Логин',proxy.proxy_username || '','text','Необязательно')}
+          ${field('proxy_password','Пароль','','password',proxy.proxy_password_set ? 'Пароль сохранён; пусто = не менять' : 'Необязательно')}
+          <label class="checkbox"><input type="checkbox" name="clear_proxy_password"> Удалить сохранённый пароль</label>
+        </div>
+        <div class="notice info" style="margin-top:14px">Proxy применяется только к Chromium Playwright. Outbound proxy инстансов настраивается отдельно.</div>
+        <div class="form-actions"><button class="btn btn-primary" type="submit">Сохранить browser proxy</button></div>
+      </form>
+    </section>
+    <section class="automation-provider"><h3>Browser session</h3><div id="automation-session">${automationSessionHTML(session)}</div></section>
+    <section class="automation-provider"><h3>WB Stream</h3><div class="detail-list">${detail('Auth token',tokenStatus,settings.wb.token_expired ? 'danger-text' : '')}</div><div class="notice info" style="margin-top:14px">Playwright использует отдельный постоянный Chromium profile WB Stream. Login и CAPTCHA выполняются вручную через авторизованный noVNC route.</div><div class="notice" style="margin-top:10px">WB auth token входит только в URI/QR OLCRTC Client и делает такой QR credential. QR OLCBOX token не содержит.</div><div class="form-actions wb-actions"><button class="btn" data-action="wb-session-create" ${!settings.wb.installed || sessionActive ? 'disabled' : ''}>Playwright: создать комнату</button><button class="btn ${settings.wb.token_expired ? 'btn-primary' : ''}" data-action="wb-playwright-refresh" ${!settings.wb.installed || sessionActive ? 'disabled' : ''}>Playwright: обновить token</button><button class="btn" data-action="wb-token">Ввести token вручную (fallback)</button><button class="btn btn-danger" data-action="wb-profile-reset" ${!settings.wb.installed ? 'disabled' : ''} title="Остановить сессию и очистить Chromium profile WB Stream">↺ Сбросить профиль (перезайти)</button></div></section>
+    <section class="automation-provider"><h3>Telemost</h3><div class="notice info">Playwright использует отдельный постоянный Chromium profile Telemost. Если Яндекс запросит вход, завершите его через noVNC.</div><div class="form-actions wb-actions"><button class="btn" data-action="telemost-session-create" ${!settings.wb.installed || sessionActive ? 'disabled' : ''}>Playwright: создать комнату</button><button class="btn btn-danger" data-action="telemost-profile-reset" ${!settings.wb.installed ? 'disabled' : ''} title="Остановить сессию и очистить Chromium profile Telemost">↺ Сбросить профиль (перезайти)</button></div></section>`;
+}
+
+function automationSessionHTML(session = {}) {
+  if (!session.active) return '<div class="notice">Browser-сессия не активна</div>';
+  const provider = session.provider === 'telemost' ? 'telemost' : 'wbstream';
+  const label = provider === 'telemost' ? 'Telemost' : 'WB Stream';
+  const worker = session.state || {};
+  const status = worker.message || worker.phase || 'Chromium запущен';
+  return `<div class="notice info"><strong>${esc(label)}</strong><br>${esc(status)}${session.expires_at ? `<br>До ${formatDate(session.expires_at)}` : ''}<div class="form-actions wb-actions" style="margin-top:12px"><a class="btn btn-primary" href="${attr(session.novnc_url || '')}" target="_blank" rel="noopener">Открыть noVNC</a><button class="btn btn-danger" data-action="automation-session-stop" data-provider="${attr(provider)}">Остановить браузер</button></div></div>`;
 }
 
 async function loadLogsPage() {
@@ -634,6 +677,7 @@ app.addEventListener('click', async event => {
     if (action === 'wb-session-create') await runAutomationSession('wbstream','create');
     if (action === 'wb-playwright-refresh') await runAutomationSession('wbstream','refresh');
     if (action === 'telemost-session-create') await runAutomationSession('telemost','create');
+    if (action === 'automation-session-stop') await stopAutomationSession(target.dataset.provider);
     if (action === 'wb-token') openWBTokenModal();
     if (action === 'wb-fill-instance') await fillWBInstanceForm();
     if (action === 'telemost-fill-instance') await fillTelemostInstanceForm();
@@ -668,6 +712,7 @@ app.addEventListener('submit', async event => {
       const d=new FormData(form);const linked=d.get('source_type')==='linked';const payload={source_instance_id:linked?Number(d.get('source_instance_id')):null,raw_uri:linked?'':d.get('raw_uri').trim(),name:d.get('name'),comment:d.get('comment'),ip:d.get('ip'),color:d.get('color'),enabled:d.has('enabled'),sort_order:999};await api(`/api/v1/subscriptions/${form.dataset.slug}/entries`,{method:'POST',body:JSON.stringify(payload)});closeModal();await loadSubscriptions();toast('Entry OLCRTC Client добавлен');
     }
     if (form.dataset.form === 'credentials') { const d=new FormData(form);await api('/api/v1/auth/credentials',{method:'PUT',body:JSON.stringify({username:d.get('username'),current_password:d.get('current_password'),new_password:d.get('new_password')})});state.user=null;renderLogin('Credentials изменены. Войдите снова.'); }
+    if (form.dataset.form === 'automation-proxy') { const d=new FormData(form);state.automationSettings=await api('/api/v1/automation/settings',{method:'PUT',body:JSON.stringify({proxy_mode:d.get('proxy_mode'),proxy_address:d.get('proxy_address'),proxy_username:d.get('proxy_username'),proxy_password:d.get('proxy_password'),clear_proxy_password:d.has('clear_proxy_password')})});renderSettings();toast('Browser proxy сохранён'); }
     if (form.dataset.form === 'yandex') { const d=new FormData(form);await api('/api/v1/settings',{method:'PUT',body:JSON.stringify({yandex_enabled:d.has('yandex_enabled'),yandex_base_path:d.get('yandex_base_path'),yandex_oauth_token:d.get('yandex_oauth_token'),clear_yandex_token:d.has('clear_yandex_token')})});await loadSettings();toast('Yandex settings сохранены'); }
     if (form.dataset.form === 'instance-settings') { const d=new FormData(form);await api('/api/v1/settings',{method:'PUT',body:JSON.stringify({max_instances:Number(d.get('max_instances'))})});await loadSettings();toast('Лимит сохранён'); }
     if (form.dataset.form === 'theme') { const d=new FormData(form);const theme=d.get('theme');await api('/api/v1/settings',{method:'PUT',body:JSON.stringify({theme})});applyTheme(theme);localStorage.setItem('olcrtc-theme',theme);toast('Тема применена'); }
@@ -766,10 +811,14 @@ async function fillTelemostInstanceForm(){
 
 async function runAutomationSession(provider,action){
   const session=await api(`/api/v1/automation/${provider}/session`,{method:'POST',body:JSON.stringify({action})});
+  state.automationSession=session;
+  refreshAutomationSessionView();
   window.open(session.novnc_url,provider==='telemost'?'olcrtc-telemost-novnc':'olcrtc-wb-novnc','noopener');
   const title=provider==='telemost'?'Playwright: создать комнату Telemost':action==='create'?'Playwright: создать WB комнату':'Playwright: обновить WB token';
-  openModal(title,`<div class="notice info">Сессия активна до ${formatDate(session.expires_at)}. Выполните login/CAPTCHA в noVNC.</div><div class="form-actions"><a class="btn btn-primary" href="${attr(session.novnc_url)}" target="_blank" rel="noopener">Открыть noVNC</a></div><div class="operation-card running" id="automation-session-state">Ожидание Chromium...</div>`);
+  openModal(title,`<div class="notice info">Сессия активна до ${formatDate(session.expires_at)}. Выполните login/CAPTCHA в noVNC.</div><div class="form-actions"><a class="btn btn-primary" href="${attr(session.novnc_url)}" target="_blank" rel="noopener">Открыть noVNC</a><button class="btn btn-danger" data-action="automation-session-stop" data-provider="${attr(provider)}">Остановить браузер</button></div><div class="operation-card running" id="automation-session-state">Ожидание Chromium...</div>`);
   const current=await waitForAutomationSession(provider,statePayload=>{const root=document.querySelector('#automation-session-state');if(root)root.textContent=`${statePayload.message||statePayload.phase||'Ожидание'} · ${statePayload.percent||0}%`;});
+  state.automationSession=current;
+  refreshAutomationSessionView();
   const root=document.querySelector('#automation-session-state');if(root){root.className='operation-card completed';root.textContent=provider==='telemost'?'Комната Telemost создана.':`Готово. ${wbApplySummary(current.state?.applied)}`;}
   toast(provider==='telemost'?'Комната Telemost создана':'WB token получен через Playwright',provider==='telemost'?(current.state?.room_id||''):wbApplySummary(current.state?.applied));
   if(state.page==='settings'){stopPolling();await loadSettings();}else if(state.page==='instances'){await loadInstances();}
@@ -786,6 +835,14 @@ async function waitForAutomationSession(provider,onProgress=()=>{}){
     if(!current.active)throw new Error(`Время ${label}-сессии истекло`);
   }
   throw new Error(`${label} automation не завершилась вовремя`);
+}
+
+async function stopAutomationSession(provider=state.automationSession?.provider||'wbstream'){
+  await api(`/api/v1/automation/${provider}/session`,{method:'DELETE'});
+  state.automationSession={active:false,provider,state:{}};
+  refreshAutomationSessionView();
+  const root=document.querySelector('#automation-session-state');if(root){root.className='operation-card muted';root.textContent='Browser-сессия остановлена';}
+  toast('Browser-сессия остановлена');
 }
 
 async function resetAutomationProfile(provider,label){
@@ -845,12 +902,14 @@ async function refreshSettingsOperations(){
   state.settingsPolling=true;
   const previousWB=state.wbOperation?.state,previousUpdate=state.updateOperation?.state;
   try{
-    const [wbOperation,updateOperation]=await Promise.all([
+    const [wbOperation,updateOperation,automationSession]=await Promise.all([
       api('/api/v1/automation/components/progress').catch(()=>null),
       api('/api/v1/updates/progress').catch(()=>null),
+      api('/api/v1/wb/session').catch(()=>null),
     ]);
     if(wbOperation)state.wbOperation=wbOperation;
     if(updateOperation)state.updateOperation=updateOperation;
+    if(automationSession)state.automationSession=automationSession;
     const wbFinished=previousWB==='running'&&state.wbOperation?.state!=='running';
     const updateFinished=previousUpdate==='running'&&state.updateOperation?.state!=='running';
     if(wbFinished||updateFinished){
@@ -878,6 +937,13 @@ function refreshSettingsOperationViews(){
   const updateButton=document.querySelector('[data-action="install-update"]:not([data-bundle])');if(updateButton)updateButton.disabled=updateRunning||!latest||latest.current;
   const rollbackButton=document.querySelector('[data-action="rollback-update"]');if(rollbackButton)rollbackButton.disabled=updateRunning||!state.releases?.rollback_available;
   document.querySelectorAll('[data-action="wb-install"],[data-action="wb-remove"]').forEach(button=>{button.disabled=wbRunning||!state.settings?.wb?.supported;});
+  refreshAutomationSessionView();
+}
+
+function refreshAutomationSessionView(){
+  const root=document.querySelector('#automation-session');if(root)root.innerHTML=automationSessionHTML(state.automationSession||{});
+  const unavailable=!state.settings?.wb?.installed||Boolean(state.automationSession?.active);
+  document.querySelectorAll('[data-action="wb-session-create"],[data-action="wb-playwright-refresh"],[data-action="telemost-session-create"]').forEach(button=>{button.disabled=unavailable;});
 }
 
 function operationProgressHTML(operation={},title='Операция'){

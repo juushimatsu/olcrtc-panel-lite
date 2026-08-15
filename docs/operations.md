@@ -62,6 +62,12 @@ journalctl -u olcrtc-instance@1 -n 200 --no-pager
 sudo olcrtc-panel instance prepare --config /etc/olcrtc-panel/config.yaml --id 1
 ```
 
+## Browser automation
+
+В `Настройки → Автоматизация WB и Telemost` можно задать отдельный proxy только для Chromium Playwright: HTTP, HTTPS или SOCKS5, включая логин и пароль. Адрес указывается без схемы в формате `host:port`; пароль хранится зашифрованно. Для SOCKS5 с авторизацией worker автоматически поднимает временный loopback-мост, поскольку Chromium не принимает credentials SOCKS5 напрямую.
+
+Активная browser-сессия отображается в том же разделе. Кнопка `Остановить браузер` завершает Chromium, Xvfb и noVNC через `olcrtc-wb-session.service`, но сохраняет cookies и постоянный profile. Это позволяет сразу повторить создание комнаты или обновление токена.
+
 ## Релизы и обновления
 
 Страница `Настройки → Обновления` показывает последние десять опубликованных bundle-релизов. Из неё можно обновиться до последнего bundle, установить одну из прошлых версий или выполнить rollback на предыдущий локальный bundle. Workflow после успешной публикации автоматически удаляет более старые bundle-релизы и соответствующие tags.

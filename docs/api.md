@@ -16,6 +16,8 @@
 
 Старые `/wb/...` routes сохранены как compatibility aliases на релиз `0.3.0`. Новые клиенты должны использовать `/automation/...`.
 
+`PUT /automation/settings` принимает `proxy_mode` (`direct`, `http`, `https`, `socks5`), `proxy_address` в формате `host:port`, необязательные `proxy_username`, `proxy_password` и `clear_proxy_password`. Пароль никогда не возвращается API. `DELETE /automation/<provider>/session` немедленно останавливает Chromium/noVNC, сохраняя постоянный browser profile.
+
 Ошибка имеет стабильную форму:
 
 ```json

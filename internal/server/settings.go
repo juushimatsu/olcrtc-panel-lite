@@ -25,6 +25,7 @@ import (
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/certificates"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/config"
 	"github.com/juushimatsu/olcrtc-panel-lite/internal/redact"
+	"github.com/juushimatsu/olcrtc-panel-lite/internal/store"
 )
 
 var bundlePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
@@ -254,7 +255,7 @@ func (s *Server) handleWBRemove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusConflict, "operation_running", err.Error())
 		return
 	}
-	for _, key := range []string{"wb_token", "wb_token_exp", "wb_proxy_mode", "wb_proxy_address", "wb_proxy_password", "wb_session_expires", "wb_session_extended"} {
+	for _, key := range []string{"wb_token", "wb_token_exp", "wb_proxy_mode", "wb_proxy_address", "wb_proxy_username", "wb_proxy_password", "wb_session_expires", "wb_session_extended", automationSessionKey} {
 		_ = s.store.DeleteSetting(r.Context(), key)
 	}
 	audit(s, r, "wb.components_remove", "wb", "components", "started", "")
@@ -268,16 +269,18 @@ func (s *Server) handleWBProgress(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleWBSettingsGet(w http.ResponseWriter, r *http.Request) {
 	mode, _ := s.store.SettingOrDefault(r.Context(), "wb_proxy_mode", "direct")
 	address, _ := s.store.SettingOrDefault(r.Context(), "wb_proxy_address", "")
+	username, _ := s.store.SettingOrDefault(r.Context(), "wb_proxy_username", "")
 	_, _, passErr := s.store.Setting(r.Context(), "wb_proxy_password")
 	_, _, tokenErr := s.store.Setting(r.Context(), "wb_token")
 	exp, _ := s.store.SettingOrDefault(r.Context(), "wb_token_exp", "")
-	writeJSON(w, http.StatusOK, map[string]any{"proxy_mode": mode, "proxy_address": address, "proxy_password_set": passErr == nil, "token_set": tokenErr == nil, "token_exp": exp, "token_expired": tokenExpired(exp), "components": wbStatus()})
+	writeJSON(w, http.StatusOK, map[string]any{"proxy_mode": mode, "proxy_address": address, "proxy_username": username, "proxy_password_set": passErr == nil, "token_set": tokenErr == nil, "token_exp": exp, "token_expired": tokenExpired(exp), "components": wbStatus()})
 }
 
 func (s *Server) handleWBSettingsPut(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		ProxyMode          string `json:"proxy_mode"`
 		ProxyAddress       string `json:"proxy_address"`
+		ProxyUsername      string `json:"proxy_username"`
 		ProxyPassword      string `json:"proxy_password"`
 		ClearProxyPassword bool   `json:"clear_proxy_password"`
 	}
@@ -285,18 +288,39 @@ func (s *Server) handleWBSettingsPut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "invalid_request", "Проверьте proxy")
 		return
 	}
-	allowed := map[string]bool{"direct": true, "http": true, "https": true, "socks5": true}
-	if !allowed[input.ProxyMode] {
-		writeError(w, r, http.StatusBadRequest, "invalid_proxy_mode", "Неизвестный режим proxy")
+	proxy, err := normalizeAutomationProxy(input.ProxyMode, input.ProxyAddress, input.ProxyUsername)
+	if err != nil {
+		writeError(w, r, http.StatusBadRequest, "invalid_proxy", err.Error())
 		return
 	}
-	_ = s.store.SetSetting(r.Context(), "wb_proxy_mode", input.ProxyMode, false)
-	_ = s.store.SetSetting(r.Context(), "wb_proxy_address", input.ProxyAddress, false)
+	if len(input.ProxyPassword) > 1024 || strings.ContainsAny(input.ProxyPassword, "\r\n") {
+		writeError(w, r, http.StatusBadRequest, "invalid_proxy_password", "Proxy password слишком длинный или содержит перевод строки")
+		return
+	}
+	if err := s.store.SetSettings(r.Context(), map[string]string{
+		"wb_proxy_mode":     proxy.Mode,
+		"wb_proxy_address":  proxy.Address,
+		"wb_proxy_username": proxy.Username,
+	}); err != nil {
+		s.logger.Error("save automation proxy settings", "error", err)
+		writeError(w, r, http.StatusInternalServerError, "settings_save_failed", "Не удалось сохранить proxy")
+		return
+	}
 	if input.ClearProxyPassword {
-		_ = s.store.DeleteSetting(r.Context(), "wb_proxy_password")
+		if err := s.store.DeleteSetting(r.Context(), "wb_proxy_password"); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "settings_save_failed", "Не удалось удалить proxy password")
+			return
+		}
 	} else if input.ProxyPassword != "" {
-		encrypted, _ := s.secrets.Encrypt(input.ProxyPassword)
-		_ = s.store.SetSetting(r.Context(), "wb_proxy_password", encrypted, true)
+		encrypted, err := s.secrets.Encrypt(input.ProxyPassword)
+		if err != nil {
+			writeError(w, r, http.StatusInternalServerError, "secret_encrypt_failed", "Не удалось сохранить proxy password")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "wb_proxy_password", encrypted, true); err != nil {
+			writeError(w, r, http.StatusInternalServerError, "settings_save_failed", "Не удалось сохранить proxy password")
+			return
+		}
 	}
 	audit(s, r, "wb.settings_update", "wb", "settings", "success", "")
 	s.handleWBSettingsGet(w, r)
@@ -779,14 +803,28 @@ func (s *Server) syncWBTokenSubscriptions(ctx context.Context, result map[string
 func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action, provider string) error {
 	mode, _ := s.store.SettingOrDefault(ctx, "wb_proxy_mode", "direct")
 	address, _ := s.store.SettingOrDefault(ctx, "wb_proxy_address", "")
-	password := ""
-	if encrypted, _, err := s.store.Setting(ctx, "wb_proxy_password"); err == nil {
-		password, _ = s.secrets.Decrypt(encrypted)
+	username, _ := s.store.SettingOrDefault(ctx, "wb_proxy_username", "")
+	proxySettings, err := normalizeAutomationProxy(mode, address, username)
+	if err != nil {
+		return fmt.Errorf("invalid stored automation proxy: %w", err)
 	}
 	proxy := map[string]string{}
-	if mode != "direct" && address != "" {
-		proxy["server"] = mode + "://" + address
-		proxy["password"] = password
+	if proxySettings.Mode != "direct" {
+		proxy["server"] = proxySettings.Mode + "://" + proxySettings.Address
+		if proxySettings.Username != "" {
+			proxy["username"] = proxySettings.Username
+		}
+		if encrypted, _, settingErr := s.store.Setting(ctx, "wb_proxy_password"); settingErr == nil {
+			password, decryptErr := s.secrets.Decrypt(encrypted)
+			if decryptErr != nil {
+				return fmt.Errorf("decrypt automation proxy password: %w", decryptErr)
+			}
+			if password != "" {
+				proxy["password"] = password
+			}
+		} else if !store.IsNotFound(settingErr) {
+			return fmt.Errorf("load automation proxy password: %w", settingErr)
+		}
 	}
 	homeURL := "https://stream.wb.ru"
 	existingRoomID := ""
@@ -808,6 +846,45 @@ func (s *Server) writeWBJob(ctx context.Context, expires time.Time, action, prov
 		return err
 	}
 	return writeWBWorkerJSON(wbStatePath, map[string]any{"phase": "queued", "message": "Запуск Chromium...", "percent": 1, "action": action, "provider": provider, "updated_at": time.Now().Unix()})
+}
+
+type automationProxySettings struct {
+	Mode     string
+	Address  string
+	Username string
+}
+
+func normalizeAutomationProxy(mode, address, username string) (automationProxySettings, error) {
+	settings := automationProxySettings{
+		Mode:     strings.ToLower(strings.TrimSpace(mode)),
+		Address:  strings.TrimSpace(address),
+		Username: strings.TrimSpace(username),
+	}
+	allowed := map[string]bool{"direct": true, "http": true, "https": true, "socks5": true}
+	if !allowed[settings.Mode] {
+		return automationProxySettings{}, errors.New("Неизвестный режим proxy")
+	}
+	if len(settings.Username) > 256 || strings.ContainsAny(settings.Username, "\r\n") {
+		return automationProxySettings{}, errors.New("Proxy username слишком длинный или содержит перевод строки")
+	}
+	if settings.Mode == "direct" {
+		return settings, nil
+	}
+	if settings.Address == "" {
+		return automationProxySettings{}, errors.New("Укажите proxy в формате host:port")
+	}
+	if len(settings.Address) > 512 || strings.ContainsAny(settings.Address, " \t\r\n") || strings.Contains(settings.Address, "://") {
+		return automationProxySettings{}, errors.New("Proxy address должен иметь формат host:port без схемы и пробелов")
+	}
+	parsed, err := url.Parse(settings.Mode + "://" + settings.Address)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return automationProxySettings{}, errors.New("Proxy address должен иметь формат host:port")
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return automationProxySettings{}, errors.New("Proxy port должен быть в диапазоне 1..65535")
+	}
+	return settings, nil
 }
 
 func refreshWBAutomationRuntimeAssets(ctx context.Context) error {

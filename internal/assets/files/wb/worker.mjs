@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import net from 'node:net';
 import process from 'node:process';
 
 const require = createRequire(import.meta.url);
@@ -22,6 +23,226 @@ const telemostSelectors = {
   roomReady: '[data-testid="copy-link-short-button"], [class*="MeetingNumber"]',
 };
 let activeContext;
+let activeProxyBridge;
+
+function createSocketReader(socket) {
+  let buffered = Buffer.alloc(0);
+  let pending;
+  let failure;
+
+  const flush = () => {
+    if (!pending || buffered.length < pending.length) return;
+    const { length, resolve } = pending;
+    pending = undefined;
+    const result = buffered.subarray(0, length);
+    buffered = buffered.subarray(length);
+    resolve(result);
+  };
+  const fail = error => {
+    failure = error;
+    if (!pending) return;
+    const { reject } = pending;
+    pending = undefined;
+    reject(error);
+  };
+  const onData = chunk => {
+    buffered = buffered.length ? Buffer.concat([buffered, chunk]) : chunk;
+    flush();
+  };
+  const onEnd = () => fail(new Error('SOCKS5 connection closed during handshake'));
+  const onError = error => fail(error);
+
+  socket.on('data', onData);
+  socket.on('end', onEnd);
+  socket.on('error', onError);
+
+  return {
+    read(length) {
+      if (buffered.length >= length) {
+        const result = buffered.subarray(0, length);
+        buffered = buffered.subarray(length);
+        return Promise.resolve(result);
+      }
+      if (failure) return Promise.reject(failure);
+      if (pending) return Promise.reject(new Error('Concurrent SOCKS5 reads are not supported'));
+      return new Promise((resolve, reject) => { pending = { length, resolve, reject }; });
+    },
+    release() {
+      socket.pause();
+      socket.off('data', onData);
+      socket.off('end', onEnd);
+      socket.off('error', onError);
+      const result = buffered;
+      buffered = Buffer.alloc(0);
+      return result;
+    },
+  };
+}
+
+async function readSocksAddress(reader, addressType) {
+  if (addressType === 0x01) return reader.read(4);
+  if (addressType === 0x04) return reader.read(16);
+  if (addressType === 0x03) {
+    const length = await reader.read(1);
+    return Buffer.concat([length, await reader.read(length[0])]);
+  }
+  throw new Error(`Unsupported SOCKS5 address type: ${addressType}`);
+}
+
+function socksFailureReply(code = 0x01) {
+  return Buffer.from([0x05, code, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+}
+
+function connectTCP(host, port) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    socket.on('error', () => {});
+    socket.once('connect', () => resolve(socket));
+    socket.once('error', reject);
+  });
+}
+
+async function connectThroughAuthenticatedSocks5(proxy, request) {
+  const upstreamURL = new URL(proxy.server);
+  const upstreamHost = upstreamURL.hostname.replace(/^\[|\]$/g, '');
+  const upstreamPort = Number(upstreamURL.port);
+  const username = Buffer.from(proxy.username || '', 'utf8');
+  const password = Buffer.from(proxy.password || '', 'utf8');
+  if (!username.length || !password.length) throw new Error('Для SOCKS5 авторизации нужны логин и пароль');
+  if (username.length > 255 || password.length > 255) throw new Error('Логин и пароль SOCKS5 должны занимать не более 255 байт');
+
+  const socket = await connectTCP(upstreamHost, upstreamPort);
+  socket.setTimeout(30_000, () => socket.destroy(new Error('SOCKS5 upstream timeout')));
+  const reader = createSocketReader(socket);
+  socket.write(Buffer.from([0x05, 0x02, 0x02, 0x00]));
+  const method = await reader.read(2);
+  if (method[0] !== 0x05 || (method[1] !== 0x00 && method[1] !== 0x02)) {
+    socket.destroy();
+    throw new Error('SOCKS5 proxy не принял поддерживаемый метод авторизации');
+  }
+  if (method[1] === 0x02) {
+    socket.write(Buffer.concat([
+      Buffer.from([0x01, username.length]), username,
+      Buffer.from([password.length]), password,
+    ]));
+    const authentication = await reader.read(2);
+    if (authentication[0] !== 0x01 || authentication[1] !== 0x00) {
+      socket.destroy();
+      throw new Error('SOCKS5 proxy отклонил логин или пароль');
+    }
+  }
+
+  socket.write(request);
+  const responseHeader = await reader.read(4);
+  if (responseHeader[0] !== 0x05) {
+    socket.destroy();
+    throw new Error('SOCKS5 proxy вернул некорректный ответ');
+  }
+  const responseAddress = await readSocksAddress(reader, responseHeader[3]);
+  const responsePort = await reader.read(2);
+  return {
+    socket,
+    reader,
+    response: Buffer.concat([responseHeader, responseAddress, responsePort]),
+  };
+}
+
+async function relayAuthenticatedSocks5(client, proxy, sockets) {
+  const clientReader = createSocketReader(client);
+  let upstream;
+  try {
+    client.setTimeout(30_000, () => client.destroy(new Error('SOCKS5 client timeout')));
+    const greeting = await clientReader.read(2);
+    const methods = await clientReader.read(greeting[1]);
+    if (greeting[0] !== 0x05 || !methods.includes(0x00)) {
+      client.end(Buffer.from([0x05, 0xff]));
+      return;
+    }
+    client.write(Buffer.from([0x05, 0x00]));
+
+    const requestHeader = await clientReader.read(4);
+    if (requestHeader[0] !== 0x05 || requestHeader[1] !== 0x01) {
+      client.end(socksFailureReply(0x07));
+      return;
+    }
+    const requestAddress = await readSocksAddress(clientReader, requestHeader[3]);
+    const requestPort = await clientReader.read(2);
+    const request = Buffer.concat([requestHeader, requestAddress, requestPort]);
+    const connected = await connectThroughAuthenticatedSocks5(proxy, request);
+    upstream = connected.socket;
+    sockets.add(upstream);
+    upstream.once('close', () => sockets.delete(upstream));
+    upstream.on('error', () => client.destroy());
+    client.on('error', () => upstream.destroy());
+
+    client.write(connected.response);
+    if (connected.response[1] !== 0x00) {
+      client.end();
+      upstream.destroy();
+      return;
+    }
+
+    const clientRemainder = clientReader.release();
+    const upstreamRemainder = connected.reader.release();
+    client.setTimeout(0);
+    upstream.setTimeout(0);
+    if (clientRemainder.length) upstream.write(clientRemainder);
+    if (upstreamRemainder.length) client.write(upstreamRemainder);
+    client.pipe(upstream);
+    upstream.pipe(client);
+  } catch (error) {
+    console.error(`SOCKS5 bridge connection failed: ${error?.message || error}`);
+    upstream?.destroy();
+    if (!client.destroyed) client.end(socksFailureReply());
+  }
+}
+
+async function createAuthenticatedSocks5Bridge(proxy) {
+  const username = Buffer.from(proxy.username || '', 'utf8');
+  const password = Buffer.from(proxy.password || '', 'utf8');
+  if (!username.length || !password.length) throw new Error('Для SOCKS5 авторизации нужны логин и пароль');
+  if (username.length > 255 || password.length > 255) throw new Error('Логин и пароль SOCKS5 должны занимать не более 255 байт');
+
+  const sockets = new Set();
+  const server = net.createServer(client => {
+    sockets.add(client);
+    client.once('close', () => sockets.delete(client));
+    client.on('error', () => {});
+    void relayAuthenticatedSocks5(client, proxy, sockets);
+  });
+  await new Promise((resolve, reject) => {
+    const onError = error => reject(error);
+    server.once('error', onError);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', onError);
+      resolve();
+    });
+  });
+  server.on('error', error => console.error(`SOCKS5 bridge failed: ${error?.message || error}`));
+  const address = server.address();
+  return {
+    proxy: { server: `socks5://127.0.0.1:${address.port}` },
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      if (!server.listening) return;
+      await new Promise(resolve => server.close(resolve));
+    },
+  };
+}
+
+async function prepareBrowserProxy() {
+  if (!job.proxy?.server) return { proxy: undefined, close: async () => {} };
+  const configured = {
+    server: job.proxy.server,
+    username: job.proxy.username || undefined,
+    password: job.proxy.password || undefined,
+  };
+  const proxyURL = new URL(configured.server);
+  if (proxyURL.protocol !== 'socks5:' || (!configured.username && !configured.password)) {
+    return { proxy: configured, close: async () => {} };
+  }
+  return createAuthenticatedSocks5Bridge(configured);
+}
 
 function writeState(phase, message, percent, extra = {}) {
   const payload = { phase, message, percent, action: job.action, provider, updated_at: Math.floor(Date.now() / 1000), ...extra };
@@ -209,28 +430,39 @@ async function runTelemost(context, initialPage) {
 }
 
 async function main() {
-  const proxy = job.proxy?.server ? { server: job.proxy.server, username: job.proxy.username || undefined, password: job.proxy.password || undefined } : undefined;
-  writeState('starting', 'Запуск удалённого Chromium...', 5);
-  const context = await chromium.launchPersistentContext(job.profile_dir, {
-    headless: false, viewport: null, screen: { width: 1280, height: 800 }, proxy,
-    permissions: ['clipboard-read', 'clipboard-write'],
-    args: ['--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--window-size=1280,800'],
-  });
-  activeContext = context;
-  const page = context.pages()[0] || await context.newPage();
-  if (provider === 'wbstream') {
-    await runWB(context, page);
-  } else if (provider === 'telemost') {
-    await runTelemost(context, page);
-  } else {
-    throw new Error(`Неподдерживаемый provider автоматизации: ${provider}`);
+  activeProxyBridge = await prepareBrowserProxy();
+  try {
+    writeState('starting', 'Запуск удалённого Chromium...', 5);
+    const context = await chromium.launchPersistentContext(job.profile_dir, {
+      headless: false, viewport: null, screen: { width: 1280, height: 800 }, proxy: activeProxyBridge.proxy,
+      ignoreDefaultArgs: ['--enable-automation'],
+      locale: 'ru-RU', timezoneId: 'Europe/Moscow',
+      permissions: ['clipboard-read', 'clipboard-write'],
+      args: ['--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-blink-features=AutomationControlled', '--window-size=1280,800'],
+    });
+    activeContext = context;
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+    const page = context.pages()[0] || await context.newPage();
+    if (provider === 'wbstream') {
+      await runWB(context, page);
+    } else if (provider === 'telemost') {
+      await runTelemost(context, page);
+    } else {
+      throw new Error(`Неподдерживаемый provider автоматизации: ${provider}`);
+    }
+  } finally {
+    const context = activeContext;
+    activeContext = undefined;
+    await context?.close().catch(() => {});
+    const bridge = activeProxyBridge;
+    activeProxyBridge = undefined;
+    await bridge?.close().catch(() => {});
   }
-  await context.close();
-  activeContext = undefined;
 }
 
-main().catch(async error => {
+main().catch(error => {
   writeState('error', error?.message || String(error), 0);
-  await activeContext?.close().catch(() => {});
   process.exitCode = 1;
 });

@@ -18,7 +18,7 @@ Self-hosted HTTPS admin panel for deploying and managing [olcRTC](https://github
 - OLCRTC Client subscriptions с compact JSON QR и encrypted Yandex fallback;
 - exact payload traffic из journald с дедупликацией по cursor;
 - AES-256-GCM Yandex Disk mirror;
-- опциональный Playwright/Chromium/noVNC workflow создания комнат Telemost и create/refresh для WB Stream на `linux/amd64` с контролем срока JWT;
+- опциональный Playwright/Chromium/noVNC workflow создания комнат Telemost и create/refresh для WB Stream на `linux/amd64` с контролем срока JWT, browser proxy HTTP/HTTPS/SOCKS5 с авторизацией и явной остановкой сессии;
 - backup, manual update и rollback проверенных release bundles;
 - тёмная и светлая адаптивные темы без CDN/runtime Node.js.
 
