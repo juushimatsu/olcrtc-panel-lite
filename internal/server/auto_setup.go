@@ -557,7 +557,8 @@ func (s *Server) refreshAutoSetupProgress(ctx context.Context) error {
 	workerUpdated := workerUnixTime(worker["updated_at"])
 	workerFresh := workerUpdated == 0 || state.StartedAt.IsZero() || workerUpdated >= state.StartedAt.Unix()
 	if phase == "success" && workerFresh && (state.Step == "wb_auth_prompt" || state.Step == "wb_auth_vnc" || state.Step == "wb_rooms_create" || state.Step == "telemost_prompt" || state.Step == "telemost_auth_vnc" || state.Step == "telemost_room_create") {
-		if provider == automationTeleProvider {
+		switch provider {
+		case automationTeleProvider:
 			if room, _ := worker["room_id"].(string); room != "" {
 				state.TelemostRoomID = room
 				markAutoSetupStep(&state, "telemost_auth_vnc")
@@ -566,7 +567,7 @@ func (s *Server) refreshAutoSetupProgress(ctx context.Context) error {
 				state.Message = "Комната Telemost создана"
 				state.CurrentAction = "Проверьте Room ID и продолжите"
 			}
-		} else if provider == automationWBProvider {
+		case automationWBProvider:
 			if room, _ := worker["room_id"].(string); room != "" {
 				state.WBRoomIDs = autoSetupRooms(append(state.WBRoomIDs, room))
 				markAutoSetupStep(&state, "wb_auth_vnc")
@@ -738,7 +739,7 @@ func (s *Server) createWBInstance(ctx context.Context, name string, fps int) (mo
 		}
 	}
 	if strings.TrimSpace(room) == "" {
-		return model.Instance{}, errors.New("WB Room ID не задан")
+		return model.Instance{}, errors.New("WB room ID not set")
 	}
 	return s.createWBInstanceWithRoom(ctx, name, room, fps)
 }
@@ -756,21 +757,6 @@ func (s *Server) createWBInstanceWithRoom(ctx context.Context, name, room string
 		RoomID:    strings.TrimSpace(room),
 		Options:   model.TransportOptions{VP8FPS: fps, VideoFPS: fps},
 	})
-}
-
-func (s *Server) createTelemostInstance(ctx context.Context, name string) (model.Instance, error) {
-	state, err := s.readAutoSetupState(ctx)
-	if err != nil {
-		return model.Instance{}, err
-	}
-	room := state.TelemostRoomID
-	if room == "" {
-		room, _ = s.store.SettingOrDefault(ctx, "auto_setup_telemost_room_id", "")
-	}
-	if strings.TrimSpace(room) == "" {
-		return model.Instance{}, errors.New("Telemost Room ID не задан")
-	}
-	return s.createTelemostInstanceWithRoom(ctx, name, room)
 }
 
 func (s *Server) createTelemostInstanceWithRoom(ctx context.Context, name, room string) (model.Instance, error) {
