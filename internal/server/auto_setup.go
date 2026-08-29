@@ -381,8 +381,12 @@ func (s *Server) handleAutoSetupComplete(w http.ResponseWriter, r *http.Request)
 	if len(input.WBRoomIDs) > 0 {
 		state.WBRoomIDs = autoSetupRooms(input.WBRoomIDs)
 	}
+	// If the frontend sends an explicit empty telemostRoomID and skipTelemost is false,
+	// preserve the server-side captured room ID instead of clearing it.
 	if strings.TrimSpace(input.TelemostRoomID) != "" {
 		state.TelemostRoomID = cleanAutoSetupText(input.TelemostRoomID, maxAutoSetupRoomLength)
+	} else if input.SkipTelemost {
+		state.TelemostRoomID = ""
 	}
 	if input.SkipTelemost {
 		state.SkipTelemost = true

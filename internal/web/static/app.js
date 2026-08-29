@@ -249,7 +249,10 @@ function collectAutoSetupRooms() {
 
 async function completeAutoSetup() {
   collectAutoSetupRooms();
-  const payload = await api('/api/v1/auto-setup/complete', { method: 'POST', body: JSON.stringify({ wb_room_ids: state.autoSetup.wbRooms, telemost_room_id: state.autoSetup.skipTelemost ? '' : state.autoSetup.telemostRoom, skip_telemost: state.autoSetup.skipTelemost }) });
+  // Merge manual input with server-side captured rooms (server has priority if fields are empty)
+  const wbRooms = state.autoSetup.wbRooms.length > 0 ? state.autoSetup.wbRooms : (state.autoSetup.state?.wb_room_ids || []);
+  const telemostRoom = state.autoSetup.skipTelemost ? '' : (state.autoSetup.telemostRoom || state.autoSetup.state?.telemost_room_id || '');
+  const payload = await api('/api/v1/auto-setup/complete', { method: 'POST', body: JSON.stringify({ wb_room_ids: wbRooms, telemost_room_id: telemostRoom, skip_telemost: state.autoSetup.skipTelemost }) });
   state.autoSetup.state = payload;
   renderAutoSetupWizard();
   if (payload.step === 'completed') stopAutoSetupPolling();

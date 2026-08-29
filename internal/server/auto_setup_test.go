@@ -186,6 +186,47 @@ func TestAutoSetupCompleteCanCreateTelemost(t *testing.T) {
 	}
 }
 
+func TestAutoSetupCompletePreservesServerCapturedRoomIDs(t *testing.T) {
+	p := newTestPanel(t)
+	csrf := loginTestPanel(t, p)
+	// Simulate server-side captured Room IDs (like from VNC automation)
+	resp := p.request(t, http.MethodPost, "/api/v1/auto-setup/start", map[string]any{
+		"wb_room_ids": []string{"server-room-1", "server-room-2", "server-room-3"},
+		"step":        "wb_rooms_create",
+		"progress":    65,
+	}, csrf)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
+		t.Fatalf("start status=%d", resp.StatusCode)
+	}
+	// Complete without sending Room IDs (empty fields in frontend)
+	resp = p.request(t, http.MethodPost, "/api/v1/auto-setup/complete", map[string]any{
+		"skip_telemost":   true,
+		"start_instances": false,
+	}, csrf)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("complete status=%d", resp.StatusCode)
+	}
+	var state AutoSetupState
+	if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.CreatedInstances) != 3 {
+		t.Fatalf("expected 3 instances from server-captured rooms, got %d", len(state.CreatedInstances))
+	}
+	items, err := p.store.Instances(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("instance count=%d want 3", len(items))
+	}
+	if items[0].RoomID != "server-room-1" || items[1].RoomID != "server-room-2" || items[2].RoomID != "server-room-3" {
+		t.Fatalf("unexpected room IDs: %s, %s, %s", items[0].RoomID, items[1].RoomID, items[2].RoomID)
+	}
+}
+
 // Helpers keep the direct unit test independent from the HTTP test fixture.
 func newTestStoreForAutoSetup(root string) (*store.Store, error) {
 	return store.Open(filepath.Join(root, "panel.db"))
