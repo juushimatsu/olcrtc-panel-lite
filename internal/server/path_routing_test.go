@@ -223,5 +223,3 @@ func TestValidateMountPathRejectsDangerousInputs(t *testing.T) {
 		t.Error("ValidateMountPath(\"/\", false) should reject root")
 	}
 }
-
-
