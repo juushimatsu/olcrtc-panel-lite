@@ -14,6 +14,7 @@ const state = {
   releases: null,
   automationSettings: { proxy_mode: 'direct', proxy_address: '', proxy_username: '', proxy_password_set: false },
   automationSession: { active: false, provider: 'wbstream', state: {} },
+  autoSetup: { visible: false, state: null, poller: null, wbRooms: [], telemostRoom: '', skipTelemost: false },
   wbOperation: { state: 'idle', percent: 0 },
   updateOperation: { state: 'idle', percent: 0 },
   updateNoticeCatalog: null,
@@ -49,10 +50,230 @@ async function boot() {
     const me = await api('/api/v1/auth/me');
     state.user = me.username;
     state.csrf = me.csrf_token;
-    await navigate(state.page, false);
+    await App();
   } catch (error) {
     renderLogin();
   }
+}
+
+// App is kept as a small entry point so the first-run check remains isolated
+// from the regular dashboard navigation and can be reused after login.
+async function App() {
+  if (await maybeShowAutoSetup()) return;
+  await navigate(state.page, false);
+}
+
+async function maybeShowAutoSetup() {
+  try {
+    const status = await api('/api/v1/auto-setup/status');
+    if (!status.should_show) return false;
+    state.autoSetup.visible = true;
+    state.autoSetup.state = status.state || { step: 'welcome', progress: 0, completed_steps: [] };
+    state.autoSetup.skipTelemost = Boolean(state.autoSetup.state.skip_telemost);
+    state.autoSetup.wbRooms = [...(state.autoSetup.state.wb_room_ids || [])];
+    state.autoSetup.telemostRoom = state.autoSetup.state.telemost_room_id || '';
+    renderAutoSetupWizard();
+    startAutoSetupPolling();
+    return true;
+  } catch (_) {
+    // Older databases or a temporary API failure should not hide the panel.
+    return false;
+  }
+}
+
+const autoSetupStepOrder = ['welcome', 'playwright_check', 'playwright_install', 'wb_auth_prompt', 'wb_auth_vnc', 'telemost_prompt', 'telemost_auth_vnc', 'creating_instances', 'wb_rooms_create', 'telemost_room_create', 'starting_instances', 'completed'];
+
+function AutoSetupWizard(payload = state.autoSetup.state || {}) {
+  const current = payload || {};
+  const progress = clamp(Number(current.progress) || 0, 0, 100);
+  const title = autoSetupStepTitle(current.step || 'welcome');
+  const content = autoSetupStepContent(current);
+  const actions = autoSetupStepActions(current);
+  const logs = autoSetupLogs(current);
+  return `<main class="auto-setup-wizard" aria-labelledby="auto-setup-title"><header class="wizard-header"><div class="wizard-brand"><div class="brand-mark" aria-hidden="true">O</div><div><h1 id="auto-setup-title">olcRTC Panel Lite</h1><p>Автоматическая настройка первого запуска</p></div><strong class="wizard-percent">${Math.round(progress)}%</strong></div><div class="wizard-progress wizard-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progress)}"><span style="width:${progress}%"></span></div></header><div class="wizard-content wizard-content-wrap">${WizardStep({ step: current.step || 'welcome', title, content, actions })}</div>${ProgressLog({ logs })}</main>`;
+}
+
+function WizardStep({ step, title, content, actions }) {
+  return `<section class="wizard-step" data-wizard-step="${attr(step)}"><p class="wizard-step-label">Шаг ${Math.max(1, autoSetupStepOrder.indexOf(step) + 1)} из ${autoSetupStepOrder.length}</p><h2>${esc(title)}</h2><div class="wizard-step-content">${content}</div><div class="wizard-actions">${actions || ''}</div></section>`;
+}
+
+function VNCPrompt({ provider, novncUrl, onComplete }) {
+  const action = onComplete || (provider === 'Telemost' ? 'auto-setup-auth-telemost' : 'auto-setup-auth-wb');
+  const targetURL = novncUrl || panelURL('/wb/novnc/vnc.html');
+  return `<div class="vnc-prompt"><p>Откройте noVNC в новой вкладке и войдите в ${esc(provider)}.</p><div class="wizard-vnc-actions"><button class="btn btn-primary" data-action="auto-setup-open-vnc" data-url="${attr(targetURL)}">Открыть noVNC</button><button class="btn" data-action="${attr(action)}">Продолжить после входа</button></div><p class="warning">После входа вернитесь на эту страницу и подтвердите продолжение.</p></div>`;
+}
+
+function openAutoSetupVNC(novncUrl) { const popup = window.open(novncUrl, '_blank'); if (popup) popup.opener = null; }
+
+function ProgressLog({ logs = [] }) {
+  return `<section class="auto-setup-log" aria-live="polite"><h4>Лог выполнения</h4><div class="log-entries">${logs.length ? logs.map(entry => `<div class="log-entry"><time class="log-timestamp">${esc(entry.timestamp || '')}</time><span class="log-message">${esc(entry.message || '')}</span></div>`).join('') : '<div class="log-entry"><span class="log-message">Ожидание запуска...</span></div>'}</div></section>`;
+}
+
+function ProgressBar(value = 0) {
+  const progress = clamp(Number(value) || 0, 0, 100);
+  return `<div class="progress wizard-inline-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(progress)}"><span style="width:${progress}%"></span></div>`;
+}
+
+function autoSetupStepTitle(step) {
+  return ({
+    welcome: 'Добро пожаловать',
+    playwright_check: 'Проверка компонентов автоматизации',
+    playwright_install: 'Установка Playwright и Chromium',
+    wb_auth_prompt: 'Вход в WB Stream',
+    wb_auth_vnc: 'Подтвердите вход в WB Stream',
+    telemost_prompt: 'Инстанс Telemost',
+    telemost_auth_vnc: 'Вход в Telemost',
+    wb_rooms_create: 'Создание комнат WB Stream',
+    telemost_room_create: 'Создание комнаты Telemost',
+    creating_instances: 'Создание инстансов',
+    starting_instances: 'Запуск инстансов',
+    completed: 'Настройка завершена',
+    dismissed: 'Автонастройка пропущена',
+    error: 'Автонастройка остановлена',
+  })[step] || 'Автоматическая настройка';
+}
+
+function autoSetupStepContent(current) {
+  const step = current.step || 'welcome';
+  if (step === 'welcome') return '<p>Панель еще не настроена. Wizard поможет установить automation-компоненты и подготовить инстансы.</p><ul><li>до 3 инстансов WB Stream (60 и 120 fps)</li><li>опциональный инстанс Telemost</li></ul><p class="field-hint">Вход и CAPTCHA выполняются вручную в авторизованном окне noVNC.</p>';
+  if (step === 'playwright_check') return `<p>${esc(current.message || 'Проверяем наличие Playwright, Chromium и noVNC...')}</p>${ProgressBar(current.progress || 5)}`;
+  if (step === 'playwright_install') return `<p>${esc(current.message || 'Компоненты нужны для автоматического создания комнат.')}</p><p class="field-hint">Загрузка может занимать несколько минут и требует Linux/amd64.</p>${ProgressBar(current.progress || 12)}`;
+  if (step === 'wb_auth_prompt' || step === 'wb_auth_vnc') return `${VNCPrompt({ provider: 'WB Stream', onComplete: 'auto-setup-auth-wb' })}<div class="manual-room-block"><label class="field-label" for="auto-setup-wb-room-1">Room ID (если noVNC недоступен)</label><input class="input" id="auto-setup-wb-room-1" data-auto-wb-room="0" placeholder="WB Room ID" value="${attr(state.autoSetup.wbRooms[0] || '')}"></div>`;
+  if (step === 'telemost_prompt' || step === 'telemost_auth_vnc') return `<p>Создать комнату Telemost сейчас?</p>${VNCPrompt({ provider: 'Telemost', onComplete: 'auto-setup-auth-telemost' })}`;
+  if (step === 'wb_rooms_create') {
+    const rows = [0, 1, 2].map(index => `<div class="field"><label for="auto-setup-wb-room-${index + 1}">WB Stream комната ${index + 1}${index === 2 ? ' (120 fps)' : ''}</label><input class="input" id="auto-setup-wb-room-${index + 1}" data-auto-wb-room="${index}" value="${attr(state.autoSetup.wbRooms[index] || '')}" placeholder="Room ID"></div>`).join('');
+    return `<p>${esc(current.message || 'Создайте комнаты по очереди через noVNC или укажите их идентификаторы вручную.')}</p><div class="auto-setup-room-grid">${rows}</div>`;
+  }
+  if (step === 'telemost_room_create') return `<div class="field"><label for="auto-setup-telemost-room">Telemost Room ID</label><input class="input" id="auto-setup-telemost-room" data-auto-telemost-room value="${attr(state.autoSetup.telemostRoom)}" placeholder="14 цифр"></div>`;
+  if (step === 'creating_instances' || step === 'starting_instances') return `<p>${esc(current.message || 'Сохраняем конфигурации и запускаем сервисы...')}</p>${ProgressBar(current.progress || 70)}`;
+  if (step === 'completed') return `<p>Создано и запущено инстансов: <strong>${(current.created_instances || []).length}</strong>.</p><ul><li># WB 1⚡ (60 fps)</li><li># WB 2⚡ (60 fps)</li><li># WB 3🚀 (120 fps)</li>${!current.skip_telemost ? '<li># TLM 1🟡</li>' : ''}</ul>${current.error ? `<div class="notice">${esc(current.error)}</div>` : '<p class="success-text">Все выбранные инстансы готовы к работе.</p>'}`;
+  if (step === 'dismissed') return '<p>Wizard пропущен. Инстансы можно настроить вручную в разделе «Инстансы».</p>';
+  return `<div class="notice">${esc(current.error || current.message || 'Неизвестная ошибка')}</div>`;
+}
+
+function autoSetupStepActions(current) {
+  const step = current.step || 'welcome';
+  if (step === 'welcome') return '<button class="btn btn-primary" data-action="auto-setup-start">Начать настройку</button><button class="btn btn-ghost" data-action="auto-setup-dismiss">Пропустить</button>';
+  if (step === 'playwright_check') return '<span class="field-hint">Проверка...</span>';
+  if (step === 'playwright_install') return '<button class="btn btn-primary" data-action="auto-setup-install">Установить компоненты</button><button class="btn btn-ghost" data-action="auto-setup-manual">Продолжить вручную</button>';
+  if (step === 'wb_auth_prompt' || step === 'wb_auth_vnc') return '<button class="btn btn-primary" data-action="auto-setup-auth-wb">Открыть WB Stream</button><button class="btn btn-ghost" data-action="auto-setup-to-rooms">Ввести Room ID вручную</button>';
+  if (step === 'telemost_prompt' || step === 'telemost_auth_vnc') return '<button class="btn btn-primary" data-action="auto-setup-auth-telemost">Создать Telemost</button><button class="btn btn-ghost" data-action="auto-setup-skip-telemost">Пропустить Telemost</button>';
+  if (step === 'wb_rooms_create') return '<button class="btn btn-primary" data-action="auto-setup-create-wb-room">Создать комнаты WB</button><button class="btn btn-ghost" data-action="auto-setup-complete">Продолжить</button>';
+  if (step === 'telemost_room_create') return '<button class="btn btn-primary" data-action="auto-setup-complete">Создать инстансы</button><button class="btn btn-ghost" data-action="auto-setup-skip-telemost">Пропустить Telemost</button>';
+  if (step === 'creating_instances' || step === 'starting_instances') return '<span class="field-hint">Выполняется...</span>';
+  if (step === 'completed' || step === 'dismissed') return '<button class="btn btn-primary" data-action="auto-setup-dashboard">Перейти к панели</button>';
+  return '<button class="btn btn-primary" data-action="auto-setup-retry">Повторить</button><button class="btn btn-ghost" data-action="auto-setup-dismiss">Настроить вручную</button>';
+}
+
+function autoSetupLogs(current) {
+  const completed = current.completed_steps || [];
+  const logs = completed.map(step => ({ timestamp: '✓', message: autoSetupStepTitle(step) }));
+  if (current.current_action || current.message) logs.push({ timestamp: '→', message: current.current_action || current.message });
+  if (current.error) logs.push({ timestamp: '!', message: current.error });
+  return logs;
+}
+
+function renderAutoSetupWizard() {
+  if (!state.autoSetup.visible) return;
+  const root = document.querySelector('#app');
+  if (root) root.innerHTML = AutoSetupWizard(state.autoSetup.state || {});
+}
+
+function startAutoSetupPolling() {
+  if (state.autoSetup.poller) clearInterval(state.autoSetup.poller);
+  state.autoSetup.poller = setInterval(fetchProgress, 2000);
+}
+
+function fetchProgress() { return fetchAutoSetupProgress(); }
+
+function stopAutoSetupPolling() {
+  if (state.autoSetup.poller) clearInterval(state.autoSetup.poller);
+  state.autoSetup.poller = null;
+}
+
+async function fetchAutoSetupProgress() {
+  if (!state.autoSetup.visible) return;
+  try {
+    const payload = await api('/api/v1/auto-setup/progress');
+    state.autoSetup.state = payload;
+    state.autoSetup.skipTelemost = Boolean(payload.skip_telemost);
+    state.autoSetup.wbRooms = [...(payload.wb_room_ids || state.autoSetup.wbRooms || [])];
+    state.autoSetup.telemostRoom = payload.telemost_room_id || state.autoSetup.telemostRoom || '';
+    renderAutoSetupWizard();
+    if (['completed', 'dismissed'].includes(payload.step)) stopAutoSetupPolling();
+  } catch (_) {}
+}
+
+async function startAutoSetup(restart = false) {
+  const payload = await api('/api/v1/auto-setup/start', { method: 'POST', body: JSON.stringify({ skip_telemost: false, restart }) });
+  state.autoSetup.state = payload;
+  state.autoSetup.visible = true;
+  renderAutoSetupWizard();
+  startAutoSetupPolling();
+}
+
+async function installAutoSetupComponents() {
+  const operation = await api('/api/v1/automation/components/install', { method: 'POST' });
+  state.autoSetup.state = { ...(state.autoSetup.state || {}), step: 'playwright_install', progress: operation.percent || 12, message: 'Установка компонентов...', current_action: 'Playwright и Chromium' };
+  renderAutoSetupWizard();
+}
+
+async function runAutoSetupProvider(provider) {
+  const current = await runAutomationSession(provider, 'create');
+  const room = normalizeRoomID(provider, current.state?.room_id || '');
+  if (provider === 'telemost') {
+    state.autoSetup.telemostRoom = room;
+    state.autoSetup.state = { ...(state.autoSetup.state || {}), step: 'telemost_room_create', progress: 60, telemost_room_id: room, current_action: 'Telemost Room ID получен' };
+  } else {
+    if (room && !state.autoSetup.wbRooms.includes(room)) state.autoSetup.wbRooms = [...state.autoSetup.wbRooms, room].slice(0, 3);
+    const needsTelemost = state.autoSetup.wbRooms.length >= 3 && !state.autoSetup.skipTelemost && !state.autoSetup.telemostRoom;
+    state.autoSetup.state = { ...(state.autoSetup.state || {}), step: needsTelemost ? 'telemost_prompt' : state.autoSetup.wbRooms.length >= 3 ? 'creating_instances' : 'wb_rooms_create', progress: needsTelemost ? 80 : state.autoSetup.wbRooms.length >= 3 ? 75 : 65, wb_room_ids: state.autoSetup.wbRooms, current_action: 'WB Room ID получен' };
+  }
+  await persistAutoSetupDraft();
+  renderAutoSetupWizard();
+}
+
+async function persistAutoSetupDraft() {
+  try {
+    const current = state.autoSetup.state || {};
+    await api('/api/v1/auto-setup/start', { method: 'POST', body: JSON.stringify({ wb_room_ids: state.autoSetup.wbRooms, telemost_room_id: state.autoSetup.telemostRoom, skip_telemost: state.autoSetup.skipTelemost, step: current.step || '', progress: current.progress || 0, current_action: current.current_action || '' }) });
+  } catch (_) {}
+}
+
+function collectAutoSetupRooms() {
+  const values = [...document.querySelectorAll('[data-auto-wb-room]')].map(input => input.value.trim()).filter(Boolean);
+  if (values.length) state.autoSetup.wbRooms = [...new Set(values)].slice(0, 3);
+  const telemost = document.querySelector('[data-auto-telemost-room]');
+  if (telemost?.value.trim()) state.autoSetup.telemostRoom = normalizeRoomID('telemost', telemost.value.trim());
+}
+
+async function completeAutoSetup() {
+  collectAutoSetupRooms();
+  const payload = await api('/api/v1/auto-setup/complete', { method: 'POST', body: JSON.stringify({ wb_room_ids: state.autoSetup.wbRooms, telemost_room_id: state.autoSetup.skipTelemost ? '' : state.autoSetup.telemostRoom, skip_telemost: state.autoSetup.skipTelemost }) });
+  state.autoSetup.state = payload;
+  renderAutoSetupWizard();
+  if (payload.step === 'completed') stopAutoSetupPolling();
+}
+
+async function skipAutoSetupTelemost() {
+  const payload = await api('/api/v1/auto-setup/skip-telemost', { method: 'POST' });
+  state.autoSetup.skipTelemost = true;
+  state.autoSetup.state = payload;
+  renderAutoSetupWizard();
+}
+
+async function dismissAutoSetup() {
+  const payload = await api('/api/v1/auto-setup/dismiss', { method: 'POST' });
+  state.autoSetup.state = payload;
+  state.autoSetup.visible = false;
+  stopAutoSetupPolling();
+  await navigate('dashboard');
+}
+
+async function finishAutoSetupUI() {
+  state.autoSetup.visible = false;
+  stopAutoSetupPolling();
+  await navigate('dashboard');
 }
 
 async function api(path, options = {}) {
@@ -134,6 +355,7 @@ function shell(content) {
 
 async function navigate(page, push = true) {
   if (!navItems.some(([id]) => id === page)) page = 'dashboard';
+  if (state.autoSetup.visible) { state.autoSetup.visible = false; stopAutoSetupPolling(); }
   stopPolling();
   state.page = page;
   if (push) location.hash = page;
@@ -578,6 +800,7 @@ function automationSettingsHTML(settings, componentsRunning, tokenStatus) {
     <div class="detail-list">${detail('Платформа',settings.wb.supported ? 'linux/amd64' : 'Не поддерживается')}${detail('Components',settings.wb.installed ? 'Установлены' : 'Не установлены')}</div>
     <div class="form-actions wb-actions"><button class="btn btn-primary" data-action="wb-install" ${!settings.wb.supported || componentsRunning ? 'disabled' : ''}>Установить components</button><button class="btn btn-danger" data-action="wb-remove" ${!settings.wb.supported || componentsRunning ? 'disabled' : ''}>Удалить components</button></div>
     <div id="wb-operation">${operationProgressHTML(state.wbOperation, 'Automation components')}</div>
+    <div class="form-actions wb-actions"><button class="btn" data-action="trigger-auto-setup">Запустить wizard автонастройки</button></div>
     <section class="automation-provider">
       <h3>Browser proxy</h3>
       <form data-form="automation-proxy">
@@ -642,6 +865,20 @@ app.addEventListener('click', async event => {
     if (action === 'dismiss-update-notice') { state.updateNoticeDismissed = true; renderUpdateNotice(); }
     if (action === 'update-notice-open') await navigate('settings');
     if (action === 'logout') { await api('/api/v1/auth/logout',{method:'POST'}); state.user=null;state.updateNoticeCatalog=null;state.updateNoticeDismissed=false;renderLogin(); }
+    if (action === 'auto-setup-start') await startAutoSetup();
+    if (action === 'auto-setup-open-vnc') openAutoSetupVNC(target.dataset.url);
+    if (action === 'auto-setup-install') await installAutoSetupComponents();
+    if (action === 'auto-setup-auth-wb') await runAutoSetupProvider('wbstream');
+    if (action === 'auto-setup-auth-telemost') await runAutoSetupProvider('telemost');
+    if (action === 'auto-setup-skip-telemost') await skipAutoSetupTelemost();
+    if (action === 'auto-setup-to-rooms') { collectAutoSetupRooms(); state.autoSetup.state = { ...(state.autoSetup.state || {}), step: 'wb_rooms_create', progress: 65, wb_room_ids: state.autoSetup.wbRooms, current_action: 'Ожидание Room ID WB Stream' }; await persistAutoSetupDraft(); renderAutoSetupWizard(); }
+    if (action === 'auto-setup-create-wb-room') await runAutoSetupProvider('wbstream');
+    if (action === 'auto-setup-complete') await completeAutoSetup();
+    if (action === 'auto-setup-manual') { state.autoSetup.state = { ...(state.autoSetup.state || {}), step: 'wb_rooms_create', progress: 65, current_action: 'Ручной ввод Room ID' }; await persistAutoSetupDraft(); renderAutoSetupWizard(); }
+    if (action === 'auto-setup-retry') await startAutoSetup(true);
+    if (action === 'auto-setup-dismiss') await dismissAutoSetup();
+    if (action === 'auto-setup-dashboard') await finishAutoSetupUI();
+    if (action === 'trigger-auto-setup') await triggerAutoSetup();
     if (action === 'refresh-dashboard') await loadDashboard();
     if (action === 'refresh-instances') await loadInstances();
     if (action === 'create-instance') openInstanceForm();
@@ -700,7 +937,7 @@ app.addEventListener('submit', async event => {
   const submit = form.querySelector('[type="submit"]'); if (submit) submit.disabled = true;
   try {
     if (form.dataset.form === 'login') {
-      const d=new FormData(form);const result=await api('/api/v1/auth/login',{method:'POST',body:JSON.stringify({username:d.get('username'),password:d.get('password')})});state.user=result.username;state.csrf=result.csrf_token;state.updateNoticeCatalog=null;state.updateNoticeDismissed=false;await navigate('dashboard');
+      const d=new FormData(form);const result=await api('/api/v1/auth/login',{method:'POST',body:JSON.stringify({username:d.get('username'),password:d.get('password')})});state.user=result.username;state.csrf=result.csrf_token;state.updateNoticeCatalog=null;state.updateNoticeDismissed=false;state.page='dashboard';await App();
     }
     if (form.dataset.form === 'instance') {
       const payload=instancePayload(form);const id=form.dataset.id;const result=await api(id?`/api/v1/instances/${id}`:'/api/v1/instances',{method:id?'PUT':'POST',body:JSON.stringify(payload)});closeModal();await loadInstances();toast(id?'Инстанс обновлён':'Инстанс создан',result.warning || 'Конфигурация сохранена');
@@ -843,6 +1080,13 @@ async function stopAutomationSession(provider=state.automationSession?.provider|
   refreshAutomationSessionView();
   const root=document.querySelector('#automation-session-state');if(root){root.className='operation-card muted';root.textContent='Browser-сессия остановлена';}
   toast('Browser-сессия остановлена');
+}
+
+async function triggerAutoSetup(){
+  await api('/api/v1/settings/trigger-auto-setup',{method:'POST'});
+  state.autoSetup={visible:true,state:{step:'welcome',progress:0,completed_steps:[]},poller:null,wbRooms:[],telemostRoom:'',skipTelemost:false};
+  renderAutoSetupWizard();
+  startAutoSetupPolling();
 }
 
 async function resetAutomationProfile(provider,label){

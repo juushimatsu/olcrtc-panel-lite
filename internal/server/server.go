@@ -55,6 +55,9 @@ type Server struct {
 	operations     *operationTracker
 	logger         *slog.Logger
 	trustedProxies []*net.IPNet
+	// autoSetupMu serializes persisted wizard state updates. The wizard can be
+	// driven by several browser tabs, so every transition must be atomic.
+	autoSetupMu sync.Mutex
 }
 
 // New creates the complete API and SPA handler.

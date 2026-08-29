@@ -4,6 +4,8 @@
 /.agents/
 /.codex/
 .claude/
+.gocache/
+.gocache-race/
 /AGENTS.md
 /CLAUDE.md
 AGENTS.md

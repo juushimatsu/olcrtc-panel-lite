@@ -12,7 +12,8 @@
 - `/automation/<provider>/session`, `/automation/<provider>/session/extend`, `/automation/<provider>/profile/reset`, где `<provider>` равен `wbstream` или `telemost`;
 - `/automation/wbstream/token/refresh`; создание и refresh поддерживаются для WB Stream, Telemost поддерживает только создание комнаты;
 - `/updates/check`, `/updates/releases`, `/updates/install`, `/updates/progress`, `/updates/rollback`;
-- `/settings`.
+- `/settings`, включая `POST /settings/trigger-auto-setup`;
+- `/auto-setup/status`, `/auto-setup/start`, `/auto-setup/progress`, `/auto-setup/skip-telemost`, `/auto-setup/complete`, `/auto-setup/dismiss`.
 
 Старые `/wb/...` routes сохранены как compatibility aliases на релиз `0.3.0`. Новые клиенты должны использовать `/automation/...`.
 

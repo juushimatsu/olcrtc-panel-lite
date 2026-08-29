@@ -57,6 +57,16 @@ func (s *Server) routesSettings(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/settings", s.requireAuth(http.HandlerFunc(s.handleSettingsGet)))
 	mux.Handle("PUT /api/v1/settings", s.requireAuth(http.HandlerFunc(s.handleSettingsPut)))
 
+	// First-run auto-setup wizard. These routes live beside settings because
+	// they persist only panel settings and reuse the existing automation API.
+	mux.Handle("GET /api/v1/auto-setup/status", s.requireAuth(http.HandlerFunc(s.handleAutoSetupStatus)))
+	mux.Handle("POST /api/v1/auto-setup/start", s.requireAuth(http.HandlerFunc(s.handleAutoSetupStart)))
+	mux.Handle("GET /api/v1/auto-setup/progress", s.requireAuth(http.HandlerFunc(s.handleAutoSetupProgress)))
+	mux.Handle("POST /api/v1/auto-setup/skip-telemost", s.requireAuth(http.HandlerFunc(s.handleAutoSetupSkipTelemost)))
+	mux.Handle("POST /api/v1/auto-setup/complete", s.requireAuth(http.HandlerFunc(s.handleAutoSetupComplete)))
+	mux.Handle("POST /api/v1/auto-setup/dismiss", s.requireAuth(http.HandlerFunc(s.handleAutoSetupDismiss)))
+	mux.Handle("POST /api/v1/settings/trigger-auto-setup", s.requireAuth(http.HandlerFunc(s.handleTriggerAutoSetup)))
+
 	mux.Handle("GET /api/v1/wb/components", s.requireAuth(http.HandlerFunc(s.handleWBComponents)))
 	mux.Handle("POST /api/v1/wb/components/install", s.requireAuth(http.HandlerFunc(s.handleWBInstall)))
 	mux.Handle("POST /api/v1/wb/components/remove", s.requireAuth(http.HandlerFunc(s.handleWBRemove)))
@@ -105,7 +115,10 @@ func (s *Server) handleSettingsGet(w http.ResponseWriter, r *http.Request) {
 	cert, _ := certificates.Ensure(s.cfg.TLSDir, s.cfg.PublicIP)
 	publicCfg := s.configuredPublicSettings(r.Context())
 	restartRequired := publicCfg.PublicOrigin != s.cfg.PublicOrigin || publicCfg.PanelPath != s.cfg.PanelPath || publicCfg.SubscriptionPath != s.cfg.SubscriptionPath
-	writeJSON(w, http.StatusOK, map[string]any{"interface": map[string]any{"theme": theme}, "https": map[string]any{"public_ip": s.cfg.PublicIP, "port": s.cfg.PublicPort, "public_origin": publicCfg.PublicOrigin, "panel_path": publicCfg.PanelPath, "subscription_path": publicCfg.SubscriptionPath, "panel_url": publicCfg.PublicPanelURL(), "subscription_url": publicCfg.PublicSubscriptionBaseURL(), "active_panel_url": s.cfg.PublicPanelURL(), "active_subscription_url": s.cfg.PublicSubscriptionBaseURL(), "restart_required": restartRequired, "ca_fingerprint": cert.CAFingerprint, "server_fingerprint": cert.ServerFingerprint, "hsts": s.cfg.HSTS}, "instances": map[string]any{"maximum": s.cfg.MaxInstances}, "yandex": map[string]any{"enabled": yandexEnabled == "true", "base_path": yandexPath, "token_set": tokenErr == nil}, "wb": wb, "updates": map[string]any{"panel_version": s.cfg.PanelVersion, "upstream_sha": s.cfg.UpstreamSHA, "configured": s.cfg.ReleaseManifestURL != ""}})
+	autoState, _ := s.readAutoSetupState(r.Context())
+	autoShouldShow := s.shouldShowAutoSetup(r.Context())
+	firstRun, _ := s.store.SettingOrDefault(r.Context(), "first_run_completed", "false")
+	writeJSON(w, http.StatusOK, map[string]any{"interface": map[string]any{"theme": theme}, "https": map[string]any{"public_ip": s.cfg.PublicIP, "port": s.cfg.PublicPort, "public_origin": publicCfg.PublicOrigin, "panel_path": publicCfg.PanelPath, "subscription_path": publicCfg.SubscriptionPath, "panel_url": publicCfg.PublicPanelURL(), "subscription_url": publicCfg.PublicSubscriptionBaseURL(), "active_panel_url": s.cfg.PublicPanelURL(), "active_subscription_url": s.cfg.PublicSubscriptionBaseURL(), "restart_required": restartRequired, "ca_fingerprint": cert.CAFingerprint, "server_fingerprint": cert.ServerFingerprint, "hsts": s.cfg.HSTS}, "instances": map[string]any{"maximum": s.cfg.MaxInstances}, "yandex": map[string]any{"enabled": yandexEnabled == "true", "base_path": yandexPath, "token_set": tokenErr == nil}, "wb": wb, "updates": map[string]any{"panel_version": s.cfg.PanelVersion, "upstream_sha": s.cfg.UpstreamSHA, "configured": s.cfg.ReleaseManifestURL != ""}, "auto_setup": map[string]any{"should_show": autoShouldShow, "first_run_completed": strings.EqualFold(strings.TrimSpace(firstRun), "true"), "state": autoState}})
 }
 
 func (s *Server) configuredPublicSettings(ctx context.Context) config.Config {

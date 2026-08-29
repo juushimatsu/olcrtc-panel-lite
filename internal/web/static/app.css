@@ -245,6 +245,41 @@ html[data-theme="light"] .chip.red, html[data-theme="light"] .chip.failed, html[
 .notice.info { border-color: #28527f; background: #142942; color: #8fc0ff; }
 .fingerprint { padding: 10px 12px; border-radius: 9px; background: var(--panel-soft); border: 1px solid var(--line); color: var(--muted); overflow-wrap: anywhere; font-size: 11px; }
 
+/* First-run auto setup wizard */
+.auto-setup-wizard { position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); color: var(--text); }
+.wizard-header { padding: 24px clamp(18px, 5vw, 64px) 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.wizard-brand { display: flex; align-items: center; gap: 12px; max-width: 960px; margin: 0 auto; }
+.wizard-brand h1 { margin: 0; font-size: 19px; }
+.wizard-brand p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+.wizard-percent { margin-left: auto; color: var(--accent-2); font-size: 14px; }
+.wizard-progress, .wizard-progress-bar { height: 6px; max-width: 960px; margin: 18px auto 0; overflow: hidden; border-radius: 8px; background: var(--line); }
+.wizard-progress > span, .wizard-progress-bar > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .3s ease; }
+.wizard-progress-bar { width: 100%; }
+.wizard-progress-bar > span { width: 0; }
+.wizard-content { flex: 1; min-width: 0; padding: clamp(24px, 6vw, 72px) 18px 220px; overflow-y: auto; max-width: 960px; margin: 0 auto; }
+.wizard-content-wrap { flex: 1; overflow-y: auto; padding: clamp(24px, 6vw, 72px) 18px 220px; }
+.wizard-step { width: min(760px, 100%); margin: 0 auto; }
+.wizard-step-label { margin: 0 0 10px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.wizard-step h2 { margin: 0 0 18px; font-size: 28px; }
+.wizard-step-content { color: var(--muted); line-height: 1.65; }
+.wizard-step-content p { margin: 0 0 14px; }
+.wizard-step-content ul { margin: 0 0 18px; padding-left: 22px; }
+.wizard-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 24px; }
+.wizard-vnc-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; margin: 18px 0; }
+.vnc-prompt { max-width: 620px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-soft); text-align: center; }
+.vnc-prompt .warning { margin: 16px 0 0; padding: 11px 13px; border-left: 3px solid var(--warning-color); background: var(--warning-bg); color: var(--warning-color); font-size: 12px; }
+.wizard-inline-progress { max-width: 620px; height: 9px; margin: 20px 0; }
+.manual-room-block { max-width: 620px; margin-top: 14px; }
+.auto-setup-room-grid { display: grid; gap: 12px; max-width: 620px; }
+.auto-setup-log { position: fixed; right: 0; bottom: 0; left: 0; z-index: 1; max-height: 190px; padding: 13px clamp(18px, 5vw, 64px); overflow-y: auto; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 96%, var(--bg)); font: 12px/1.5 "Cascadia Code", Consolas, monospace; }
+.auto-setup-log h3, .auto-setup-log h4 { max-width: 960px; margin: 0 auto 7px; color: var(--muted); font: 600 11px/1.3 inherit; text-transform: uppercase; letter-spacing: .06em; }
+.auto-setup-log .log-entries { max-width: 960px; margin: 0 auto; display: grid; gap: 3px; }
+.auto-setup-log .log-entry { display: flex; gap: 10px; }
+.auto-setup-log .log-timestamp { min-width: 18px; color: var(--accent-2); }
+.auto-setup-log .log-message { color: var(--muted); overflow-wrap: anywhere; }
+html[data-theme="dark"] { --warning-bg: rgba(240, 173, 78, .1); --warning-color: #f0ad4e; }
+html[data-theme="light"] { --warning-bg: rgba(180, 112, 20, .12); --warning-color: #b07014; }
+
 .log-viewer { height: min(62vh, 680px); padding: 17px; overflow: auto; border-radius: 11px; background: #070a0d; color: #cdd9dd; white-space: pre-wrap; word-break: break-word; font: 12px/1.62 "Cascadia Code", Consolas, monospace; }
 html[data-theme="light"] .log-viewer { background: #172027; color: #e1eaed; }
 
@@ -298,6 +333,7 @@ html[data-theme="light"] .log-viewer { background: #172027; color: #e1eaed; }
 }
 
 @media (max-width: 520px) {
+  .wizard-step h2 { font-size: 22px; }
   .page-header { display: grid; }
   .update-notice { align-items: flex-start; }
   .update-notice-copy { display: grid; gap: 2px; }
