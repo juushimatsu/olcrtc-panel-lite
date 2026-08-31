@@ -153,7 +153,7 @@ function autoSetupStepContent(current) {
   }
   if (step === 'telemost_room_create') return `<div class="field"><label for="auto-setup-telemost-room">Telemost Room ID</label><input class="input" id="auto-setup-telemost-room" data-auto-telemost-room value="${attr(state.autoSetup.telemostRoom)}" placeholder="14 цифр"></div>`;
   if (step === 'creating_instances' || step === 'starting_instances') return `<p>${esc(current.message || 'Сохраняем конфигурации и запускаем сервисы...')}</p>${ProgressBar(current.progress || 70)}`;
-  if (step === 'completed') return `<p>Создано и запущено инстансов: <strong>${(current.created_instances || []).length}</strong>.</p><ul><li># WB 1⚡ (60 fps)</li><li># WB 2⚡ (60 fps)</li><li># WB 3🚀 (120 fps)</li>${!current.skip_telemost ? '<li># TLM 1🟡</li>' : ''}</ul>${current.error ? `<div class="notice">${esc(current.error)}</div>` : '<p class="success-text">Все выбранные инстансы готовы к работе.</p>'}`;
+  if (step === 'completed') return `<p>Создано инстансов: <strong>${(current.created_instances || []).length}</strong>.</p><ul><li># WB 1⚡ (60 fps)</li><li># WB 2⚡ (60 fps)</li><li># WB 3🚀 (120 fps)</li>${!current.skip_telemost ? '<li># TLM 1🟡</li>' : ''}</ul>${current.error ? `<div class="notice">${esc(current.error)}</div>` : '<p class="success-text">Инстансы созданы. Запустите их в разделе «Инстансы».</p>'}`;
   if (step === 'dismissed') return '<p>Wizard пропущен. Инстансы можно настроить вручную в разделе «Инстансы».</p>';
   return `<div class="notice">${esc(current.error || current.message || 'Неизвестная ошибка')}</div>`;
 }
@@ -188,7 +188,9 @@ function renderAutoSetupWizard() {
 
 function startAutoSetupPolling() {
   if (state.autoSetup.poller) clearInterval(state.autoSetup.poller);
-  state.autoSetup.poller = setInterval(fetchProgress, 2000);
+  // Faster polling (500ms) during active wizard steps to show Room IDs quickly
+  const interval = ['wb_rooms_create', 'wb_auth_vnc', 'telemost_auth_vnc', 'creating_instances', 'starting_instances'].includes(state.autoSetup.state?.step) ? 500 : 2000;
+  state.autoSetup.poller = setInterval(fetchProgress, interval);
 }
 
 function fetchProgress() { return fetchAutoSetupProgress(); }
@@ -202,11 +204,16 @@ async function fetchAutoSetupProgress() {
   if (!state.autoSetup.visible) return;
   try {
     const payload = await api('/api/v1/auto-setup/progress');
+    const previousStep = state.autoSetup.state?.step;
     state.autoSetup.state = payload;
     state.autoSetup.skipTelemost = Boolean(payload.skip_telemost);
     state.autoSetup.wbRooms = [...(payload.wb_room_ids || state.autoSetup.wbRooms || [])];
     state.autoSetup.telemostRoom = payload.telemost_room_id || state.autoSetup.telemostRoom || '';
     renderAutoSetupWizard();
+    // Restart polling with appropriate interval if step changed
+    if (previousStep !== payload.step) {
+      startAutoSetupPolling();
+    }
     if (['completed', 'dismissed'].includes(payload.step)) stopAutoSetupPolling();
   } catch (_) {}
 }
@@ -255,14 +262,25 @@ function collectAutoSetupRooms() {
 }
 
 async function completeAutoSetup() {
-  collectAutoSetupRooms();
-  // Merge manual input with server-side captured rooms (server has priority if fields are empty)
-  const wbRooms = state.autoSetup.wbRooms.length > 0 ? state.autoSetup.wbRooms : (state.autoSetup.state?.wb_room_ids || []);
-  const telemostRoom = state.autoSetup.skipTelemost ? '' : (state.autoSetup.telemostRoom || state.autoSetup.state?.telemost_room_id || '');
-  const payload = await api('/api/v1/auto-setup/complete', { method: 'POST', body: JSON.stringify({ wb_room_ids: wbRooms, telemost_room_id: telemostRoom, skip_telemost: state.autoSetup.skipTelemost }) });
-  state.autoSetup.state = payload;
-  renderAutoSetupWizard();
-  if (payload.step === 'completed') stopAutoSetupPolling();
+  try {
+    collectAutoSetupRooms();
+    // Merge manual input with server-side captured rooms (server has priority if fields are empty)
+    const wbRooms = state.autoSetup.wbRooms.length > 0 ? state.autoSetup.wbRooms : (state.autoSetup.state?.wb_room_ids || []);
+    const telemostRoom = state.autoSetup.skipTelemost ? '' : (state.autoSetup.telemostRoom || state.autoSetup.state?.telemost_room_id || '');
+    console.log('[auto-setup] Completing with:', { wbRooms, telemostRoom, skipTelemost: state.autoSetup.skipTelemost });
+    // Don't start instances automatically to avoid hanging on systemd service start
+    const payload = await api('/api/v1/auto-setup/complete', { method: 'POST', body: JSON.stringify({ wb_room_ids: wbRooms, telemost_room_id: telemostRoom, skip_telemost: state.autoSetup.skipTelemost, start_instances: false }) });
+    console.log('[auto-setup] Complete response:', payload);
+    state.autoSetup.state = payload;
+    renderAutoSetupWizard();
+    if (payload.step === 'completed') stopAutoSetupPolling();
+  } catch (error) {
+    console.error('[auto-setup] Complete failed:', error);
+    state.autoSetup.state = { ...(state.autoSetup.state || {}), step: 'error', error: error.message, message: 'Не удалось завершить автонастройку' };
+    renderAutoSetupWizard();
+    stopAutoSetupPolling();
+    throw error;
+  }
 }
 
 async function skipAutoSetupTelemost() {
