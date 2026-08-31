@@ -399,15 +399,19 @@ func (s *Server) handleAutoSetupComplete(w http.ResponseWriter, r *http.Request)
 	state.Progress = 70
 	state.Message = "Создание инстансов"
 	state.CurrentAction = "Сохранение конфигурации инстансов"
+	s.logger.Info("auto-setup complete: saving creating_instances state", "wb_rooms", len(state.WBRoomIDs), "telemost", state.TelemostRoomID != "", "start_instances", input.StartInstances != nil && *input.StartInstances)
 	if err := s.saveAutoSetupState(r.Context(), state); err != nil {
 		writeError(w, r, http.StatusInternalServerError, "auto_setup_state_write_failed", "Не удалось сохранить состояние автонастройки")
 		return
 	}
 	if len(state.WBRoomIDs) > 0 || (!state.SkipTelemost && state.TelemostRoomID != "") {
+		s.logger.Info("auto-setup complete: calling finishAutoSetup")
 		if err := s.finishAutoSetup(r.Context(), &state, input.StartInstances); err != nil {
+			s.logger.Error("auto-setup complete: finishAutoSetup failed", "error", err)
 			writeError(w, r, http.StatusUnprocessableEntity, "auto_setup_complete_failed", err.Error())
 			return
 		}
+		s.logger.Info("auto-setup complete: finishAutoSetup succeeded", "step", state.Step, "created", len(state.CreatedInstances))
 	} else {
 		// An explicit completion without captured rooms is the supported manual
 		// fallback. The user can create instances from the regular CRUD screen.
@@ -620,9 +624,11 @@ func (s *Server) finishAutoSetup(ctx context.Context, state *AutoSetupState, sta
 	if state == nil {
 		return errors.New("auto-setup state is nil")
 	}
+	s.logger.Info("finishAutoSetup: start", "wb_rooms", len(state.WBRoomIDs), "skip_telemost", state.SkipTelemost, "telemost_room", state.TelemostRoomID != "", "start_instances", startInstances != nil && *startInstances)
 	state.WBRoomIDs = autoSetupRooms(state.WBRoomIDs)
 	items, err := s.instances.List(ctx)
 	if err != nil {
+		s.logger.Error("finishAutoSetup: failed to list instances", "error", err)
 		return err
 	}
 	byName := make(map[string]model.Instance, len(items))
@@ -643,11 +649,14 @@ func (s *Server) finishAutoSetup(ctx context.Context, state *AutoSetupState, sta
 			continue
 		}
 		if !ok {
+			s.logger.Info("finishAutoSetup: creating WB instance", "name", name, "room", room, "index", index)
 			item, err = s.createWBInstanceWithRoom(ctx, name, room, map[bool]int{true: 120, false: 60}[index == 2])
 			if err != nil {
+				s.logger.Error("finishAutoSetup: failed to create WB instance", "name", name, "error", err)
 				failures = append(failures, fmt.Sprintf("%s: %v", name, err))
 				continue
 			}
+			s.logger.Info("finishAutoSetup: created WB instance", "name", name, "id", item.ID)
 		}
 		if _, ok := createdSet[item.ID]; !ok {
 			created = append(created, item.ID)
@@ -661,10 +670,13 @@ func (s *Server) finishAutoSetup(ctx context.Context, state *AutoSetupState, sta
 			failures = append(failures, fmt.Sprintf("%s: имя уже используется другим provider", name))
 		} else {
 			if !ok {
+				s.logger.Info("finishAutoSetup: creating Telemost instance", "room", state.TelemostRoomID)
 				item, err = s.createTelemostInstanceWithRoom(ctx, name, state.TelemostRoomID)
 				if err != nil {
+					s.logger.Error("finishAutoSetup: failed to create Telemost instance", "error", err)
 					failures = append(failures, fmt.Sprintf("%s: %v", name, err))
 				} else {
+					s.logger.Info("finishAutoSetup: created Telemost instance", "id", item.ID)
 					created = append(created, item.ID)
 				}
 			} else if _, exists := createdSet[item.ID]; !exists {
@@ -673,11 +685,15 @@ func (s *Server) finishAutoSetup(ctx context.Context, state *AutoSetupState, sta
 		}
 	}
 	if startInstances == nil || *startInstances {
+		s.logger.Info("finishAutoSetup: starting instances", "count", len(created))
 		for _, id := range created {
 			if err := s.instances.Start(ctx, id); err != nil {
+				s.logger.Error("finishAutoSetup: failed to start instance", "id", id, "error", err)
 				failures = append(failures, fmt.Sprintf("instance %d: %v", id, err))
 			}
 		}
+	} else {
+		s.logger.Info("finishAutoSetup: skipping instance startup (start_instances=false)")
 	}
 	state.CreatedInstances = created
 	state.Step = "completed"
@@ -687,12 +703,16 @@ func (s *Server) finishAutoSetup(ctx context.Context, state *AutoSetupState, sta
 	state.Error = strings.Join(failures, "; ")
 	markAutoSetupStep(state, "creating_instances")
 	markAutoSetupStep(state, "starting_instances")
+	s.logger.Info("finishAutoSetup: saving completed state", "created_count", len(created), "failures", len(failures))
 	if err := s.saveAutoSetupState(ctx, *state); err != nil {
+		s.logger.Error("finishAutoSetup: failed to save state", "error", err)
 		return err
 	}
 	if err := s.store.SetSetting(ctx, "first_run_completed", "true", false); err != nil {
+		s.logger.Error("finishAutoSetup: failed to set first_run_completed", "error", err)
 		return err
 	}
+	s.logger.Info("finishAutoSetup: success", "created", len(created))
 	return s.store.SetSetting(ctx, "auto_setup_forced", "false", false)
 }
 
