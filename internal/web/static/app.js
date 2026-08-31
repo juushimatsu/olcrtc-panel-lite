@@ -241,7 +241,8 @@ async function runAutoSetupProvider(provider) {
   } else {
     if (room && !state.autoSetup.wbRooms.includes(room)) state.autoSetup.wbRooms = [...state.autoSetup.wbRooms, room].slice(0, 3);
     const needsTelemost = state.autoSetup.wbRooms.length >= 3 && !state.autoSetup.skipTelemost && !state.autoSetup.telemostRoom;
-    state.autoSetup.state = { ...(state.autoSetup.state || {}), step: needsTelemost ? 'telemost_prompt' : state.autoSetup.wbRooms.length >= 3 ? 'creating_instances' : 'wb_rooms_create', progress: needsTelemost ? 80 : state.autoSetup.wbRooms.length >= 3 ? 75 : 65, wb_room_ids: state.autoSetup.wbRooms, current_action: 'WB Room ID получен' };
+    // Stay on wb_rooms_create step even when all 3 rooms are captured - user must click "Continue" button
+    state.autoSetup.state = { ...(state.autoSetup.state || {}), step: needsTelemost ? 'telemost_prompt' : 'wb_rooms_create', progress: needsTelemost ? 80 : 65, wb_room_ids: state.autoSetup.wbRooms, current_action: state.autoSetup.wbRooms.length >= 3 ? 'Все комнаты созданы. Нажмите Продолжить' : 'WB Room ID получен' };
   }
   await persistAutoSetupDraft();
   renderAutoSetupWizard();
@@ -901,7 +902,10 @@ app.addEventListener('click', async event => {
     if (action === 'auto-setup-skip-telemost') await skipAutoSetupTelemost();
     if (action === 'auto-setup-to-rooms') { collectAutoSetupRooms(); state.autoSetup.state = { ...(state.autoSetup.state || {}), step: 'wb_rooms_create', progress: 65, wb_room_ids: state.autoSetup.wbRooms, current_action: 'Ожидание Room ID WB Stream' }; await persistAutoSetupDraft(); renderAutoSetupWizard(); }
     if (action === 'auto-setup-create-wb-room') await runAutoSetupProvider('wbstream');
-    if (action === 'auto-setup-complete') await completeAutoSetup();
+    if (action === 'auto-setup-complete') {
+      console.log('[auto-setup] Button clicked: auto-setup-complete');
+      await completeAutoSetup();
+    }
     if (action === 'auto-setup-manual') { state.autoSetup.state = { ...(state.autoSetup.state || {}), step: 'wb_rooms_create', progress: 65, current_action: 'Ручной ввод Room ID' }; await persistAutoSetupDraft(); renderAutoSetupWizard(); }
     if (action === 'auto-setup-retry') await startAutoSetup(true);
     if (action === 'auto-setup-dismiss') await dismissAutoSetup();
