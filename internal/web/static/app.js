@@ -141,8 +141,15 @@ function autoSetupStepContent(current) {
   if (step === 'wb_auth_prompt' || step === 'wb_auth_vnc') return `${VNCPrompt({ provider: 'WB Stream', onComplete: 'auto-setup-auth-wb' })}<div class="manual-room-block"><label class="field-label" for="auto-setup-wb-room-1">Room ID (если noVNC недоступен)</label><input class="input" id="auto-setup-wb-room-1" data-auto-wb-room="0" placeholder="WB Room ID" value="${attr(state.autoSetup.wbRooms[0] || '')}"></div>`;
   if (step === 'telemost_prompt' || step === 'telemost_auth_vnc') return `<p>Создать комнату Telemost сейчас?</p>${VNCPrompt({ provider: 'Telemost', onComplete: 'auto-setup-auth-telemost' })}`;
   if (step === 'wb_rooms_create') {
-    const rows = [0, 1, 2].map(index => `<div class="field"><label for="auto-setup-wb-room-${index + 1}">WB Stream комната ${index + 1}${index === 2 ? ' (120 fps)' : ''}</label><input class="input" id="auto-setup-wb-room-${index + 1}" data-auto-wb-room="${index}" value="${attr(state.autoSetup.wbRooms[index] || '')}" placeholder="Room ID"></div>`).join('');
-    return `<p>${esc(current.message || 'Создайте комнаты по очереди через noVNC или укажите их идентификаторы вручную.')}</p><div class="auto-setup-room-grid">${rows}</div>`;
+    const total = 3;
+    const filled = state.autoSetup.wbRooms.filter(Boolean).length;
+    const progressLabel = filled > 0 ? ` (создано ${filled} из ${total})` : '';
+    const rows = [0, 1, 2].map(index => {
+      const roomValue = state.autoSetup.wbRooms[index] || '';
+      const fieldClass = roomValue ? 'field field-filled' : 'field';
+      return `<div class="${fieldClass}"><label for="auto-setup-wb-room-${index + 1}">WB Stream комната ${index + 1}${index === 2 ? ' (120 fps)' : ''}${roomValue ? ' ✓' : ''}</label><input class="input" id="auto-setup-wb-room-${index + 1}" data-auto-wb-room="${index}" value="${attr(roomValue)}" placeholder="Room ID" ${roomValue ? 'readonly' : ''}></div>`;
+    }).join('');
+    return `<p>${esc(current.message || 'Создайте комнаты по очереди через noVNC или укажите их идентификаторы вручную.')}${progressLabel}</p><div class="auto-setup-room-grid">${rows}</div>`;
   }
   if (step === 'telemost_room_create') return `<div class="field"><label for="auto-setup-telemost-room">Telemost Room ID</label><input class="input" id="auto-setup-telemost-room" data-auto-telemost-room value="${attr(state.autoSetup.telemostRoom)}" placeholder="14 цифр"></div>`;
   if (step === 'creating_instances' || step === 'starting_instances') return `<p>${esc(current.message || 'Сохраняем конфигурации и запускаем сервисы...')}</p>${ProgressBar(current.progress || 70)}`;

@@ -227,6 +227,111 @@ func TestAutoSetupCompletePreservesServerCapturedRoomIDs(t *testing.T) {
 	}
 }
 
+func TestAutoSetupProgressShowsIncrementalRoomCapture(t *testing.T) {
+	p := newTestPanel(t)
+	csrf := loginTestPanel(t, p)
+
+	// Start wizard
+	resp := p.request(t, http.MethodPost, "/api/v1/auto-setup/start", map[string]any{
+		"skip_telemost": true,
+	}, csrf)
+	resp.Body.Close()
+
+	// Simulate worker capturing first room ID
+	resp = p.request(t, http.MethodPost, "/api/v1/auto-setup/start", map[string]any{
+		"wb_room_ids": []string{"room-1"},
+		"step":        "wb_rooms_create",
+		"progress":    65,
+	}, csrf)
+	resp.Body.Close()
+
+	// Check progress endpoint returns the room ID
+	resp = p.request(t, http.MethodGet, "/api/v1/auto-setup/progress", nil, "")
+	var state1 AutoSetupState
+	if err := json.NewDecoder(resp.Body).Decode(&state1); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if len(state1.WBRoomIDs) != 1 || state1.WBRoomIDs[0] != "room-1" {
+		t.Fatalf("after first room: got %v, want [room-1]", state1.WBRoomIDs)
+	}
+	if state1.Step != "wb_rooms_create" {
+		t.Fatalf("should stay at wb_rooms_create, got %s", state1.Step)
+	}
+
+	// Add second room ID
+	resp = p.request(t, http.MethodPost, "/api/v1/auto-setup/start", map[string]any{
+		"wb_room_ids": []string{"room-1", "room-2"},
+		"step":        "wb_rooms_create",
+		"progress":    65,
+	}, csrf)
+	resp.Body.Close()
+
+	resp = p.request(t, http.MethodGet, "/api/v1/auto-setup/progress", nil, "")
+	var state2 AutoSetupState
+	if err := json.NewDecoder(resp.Body).Decode(&state2); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if len(state2.WBRoomIDs) != 2 {
+		t.Fatalf("after second room: got %d rooms, want 2", len(state2.WBRoomIDs))
+	}
+	if state2.Step != "wb_rooms_create" {
+		t.Fatalf("should still be at wb_rooms_create with 2 rooms, got %s", state2.Step)
+	}
+
+	// Add third room ID
+	resp = p.request(t, http.MethodPost, "/api/v1/auto-setup/start", map[string]any{
+		"wb_room_ids": []string{"room-1", "room-2", "room-3"},
+		"step":        "wb_rooms_create",
+		"progress":    65,
+	}, csrf)
+	resp.Body.Close()
+
+	resp = p.request(t, http.MethodGet, "/api/v1/auto-setup/progress", nil, "")
+	var state3 AutoSetupState
+	if err := json.NewDecoder(resp.Body).Decode(&state3); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if len(state3.WBRoomIDs) != 3 {
+		t.Fatalf("after third room: got %d rooms, want 3", len(state3.WBRoomIDs))
+	}
+	if state3.Step != "wb_rooms_create" {
+		t.Fatalf("should still be at wb_rooms_create until complete is called, got %s", state3.Step)
+	}
+
+	// Now complete should create 3 instances
+	resp = p.request(t, http.MethodPost, "/api/v1/auto-setup/complete", map[string]any{
+		"skip_telemost":   true,
+		"start_instances": false,
+	}, csrf)
+	defer resp.Body.Close()
+
+	var finalState AutoSetupState
+	if err := json.NewDecoder(resp.Body).Decode(&finalState); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(finalState.CreatedInstances) != 3 {
+		t.Fatalf("expected 3 created instances, got %d", len(finalState.CreatedInstances))
+	}
+
+	items, err := p.store.Instances(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("instance count=%d want 3", len(items))
+	}
+}
+
 // Helpers keep the direct unit test independent from the HTTP test fixture.
 func newTestStoreForAutoSetup(root string) (*store.Store, error) {
 	return store.Open(filepath.Join(root, "panel.db"))
